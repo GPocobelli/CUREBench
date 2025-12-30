@@ -1,6 +1,8 @@
 # Bio-Medical AI Competition - Simple Starter Kit
 
 # Core dependencies
+
+bitsandbytes
 transformers>=4.21.0
 torch>=1.12.0
 tqdm>=4.64.0
