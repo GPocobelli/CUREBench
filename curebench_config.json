@@ -13,7 +13,7 @@
   },
   "dataset": {
     "dataset_name": "cure_bench_phase_1",
-    "dataset_path": "/kaggle/working/cure-bench/curebench_valset_pharse1.jsonl",
+    "dataset_path": "/kaggle/working/CUREBench/cure-bench/curebench_valset_pharse1.jsonl",
     "description": "CureBench questions"
   },
   "output_dir": "competition_results",
