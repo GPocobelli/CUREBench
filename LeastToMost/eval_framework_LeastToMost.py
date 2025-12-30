@@ -213,7 +213,6 @@ class GPTOSS20BModel(BaseModel):
         self.reasoning_lvl = reasoning_lvl
         self.system_identity = system_identity
         self.developer_instructions = developer_instructions
-        self.prompting_strategy = self.config.get("prompting_strategy", "least_to_most")
 
 
     def load(self, **kwargs):
@@ -335,117 +334,7 @@ class CompetitionKit:
     """
 
 
-  
-
-    # ---------------------------------------------------------------------------------------
-    # Least-to-Most prompt contexts
-    # ---------------------------------------------------------------------------------------
     
-    # NOTE: The paper’s decomposition stage uses the pattern:
-    # "To answer the question 'X', we need to know: 'a', 'b', 'c'."
-    # and the solving stage is sequential: exemplars + history + next Q.
-    # :contentReference[oaicite:3]{index=3} :contentReference[oaicite:4]{index=4}
-
-    _L2M_DECOMPOSITION_INSTRUCTIONS = (
-        "Decompose the question into a list of simpler subquestions.\n"
-        "Use EXACTLY this format:\n"
-        "To answer the question \"<original question>\", we need to know: "
-        "\"<subquestion 1>\", \"<subquestion 2>\", ...\n"
-        "Only include subquestions that are necessary.\n"
-        "Do not answer the subquestions.\n"
-    )
-
-    _L2M_SOLVING_INSTRUCTIONS = (
-        "Answer the question.\n"
-        "If the question can be solved using previously answered subquestions, use them.\n"
-        "Finish with a final line: The answer is <...>.\n"
-    )
-
-    def _least_to_most_decompose(self, question: str) -> Tuple[List[str], str]:
-        """
-        Stage 1 (paper): Decomposition prompt -> model returns subquestions.
-        Returns: (subquestions, trace_text)
-        """
-        # Minimal “constant examples” are not included here because your domain is medical.
-        # However, we preserve the paper’s REQUIRED decomposition *format* exactly.
-        # :contentReference[oaicite:5]{index=5}
-
-        prompt = (
-            self._L2M_DECOMPOSITION_INSTRUCTIONS
-            + "\nQ: " + question + "\nA:"
-        )
-
-        response, trace = self.model.inference(prompt)
-
-        # Parse: extract quoted subquestions after "we need to know:"
-        # Expected: ... we need to know: "q1", "q2", "q3".
-        subqs = []
-        m = re.search(r"we need to know:\s*(.*)$", response, flags=re.IGNORECASE | re.DOTALL)
-        if m:
-            tail = m.group(1)
-            subqs = re.findall(r"\"([^\"]+)\"", tail)
-
-        # Fallback: if the model did not follow quoting, try splitting by commas after colon
-        if not subqs and m:
-            tail = m.group(1).strip()
-            parts = [p.strip(" .\n\t\"") for p in tail.split(",") if p.strip()]
-            # keep only non-empty
-            subqs = [p for p in parts if p]
-
-        # Hard safety: cap number of subquestions to avoid runaway prompts
-        subqs = subqs[:8]
-
-        trace_text = f"[L2M:DECOMPOSE]\nPROMPT:\n{prompt}\n\nRESPONSE:\n{response}\n"
-        return subqs, trace_text
-
-    def _least_to_most_solve(self, original_question: str, subquestions: List[str]) -> Tuple[str, str]:
-        """
-        Stage 2 (paper): sequential solving.
-        Prompt structure: (constant solving instructions/examples) + (Q/A history) + (next Q)
-        and iterate. The original question is appended as the final subproblem. :contentReference[oaicite:6]{index=6}
-        Returns: (final_response_text, trace_text)
-        """
-        # Prepare the ordered list of questions to solve:
-        # paper: solve subquestions, then solve original question last. :contentReference[oaicite:7]{index=7}
-        queue = list(subquestions) + [original_question]
-
-        # Start prompt with constant solving instructions (the “examples” portion).
-        # In the paper, this portion contains exemplars; here we keep the instruction scaffold
-        # but the sequential Q/A accumulation is identical.
-        prompt_prefix = self._L2M_SOLVING_INSTRUCTIONS + "\n"
-
-        history = ""  # grows as: Q: ... \nA: ... \n
-        full_trace = f"[L2M:SOLVE]\nPREFIX:\n{prompt_prefix}\n"
-
-        final_response = ""
-
-        for idx, q in enumerate(queue):
-            prompt = prompt_prefix + history + f"Q: {q}\nA:"
-            resp, trace = self.model.inference(prompt)
-
-            # Append this Q/A to history (paper-style sequential conditioning)
-            history += f"Q: {q}\nA: {resp.strip()}\n"
-
-            full_trace += (
-                f"\n--- STEP {idx+1}/{len(queue)} ---\n"
-                f"PROMPT:\n{prompt}\n\nRESPONSE:\n{resp}\n"
-            )
-
-            final_response = resp.strip()
-
-        return final_response, full_trace
-
-
-
-
-# ---------------------------------------------------------------------------------------------
-
-
-
-  
-
-
-  
     def __init__(self, config_path: str = None):
         self.model = None
         self.model_name = None
@@ -456,6 +345,9 @@ class CompetitionKit:
         os.makedirs(self.output_dir, exist_ok=True)
 
         self.datasets = self._load_dataset_configs(self.config)
+
+        self.prompting_strategy = self.config.get("prompting_strategy", "least_to_most")
+
 
     def load_model(self, model_name: str, model_type: str = "auto", **kwargs):
         self.model_name = model_name
@@ -502,6 +394,9 @@ class CompetitionKit:
             return "chatgpt"
         else:
             return "local"
+
+
+
 
     def evaluate(self, dataset_name: str, subset_size: int = None) -> EvaluationResult:
         if not self.model:
@@ -626,6 +521,121 @@ class CompetitionKit:
 
 
 
+    
+  
+
+
+
+
+
+
+    
+    # ---------------------------------------------------------------------------------------
+    # Least-to-Most prompt contexts
+    # ---------------------------------------------------------------------------------------
+    
+    # NOTE: The paper’s decomposition stage uses the pattern:
+    # "To answer the question 'X', we need to know: 'a', 'b', 'c'."
+    # and the solving stage is sequential: exemplars + history + next Q.
+    # :contentReference[oaicite:3]{index=3} :contentReference[oaicite:4]{index=4}
+
+    _L2M_DECOMPOSITION_INSTRUCTIONS = (
+        "Decompose the question into a list of simpler subquestions.\n"
+        "Use EXACTLY this format:\n"
+        "To answer the question \"<original question>\", we need to know: "
+        "\"<subquestion 1>\", \"<subquestion 2>\", ...\n"
+        "Only include subquestions that are necessary.\n"
+        "Do not answer the subquestions.\n"
+    )
+
+    _L2M_SOLVING_INSTRUCTIONS = (
+        "Answer the question.\n"
+        "If the question can be solved using previously answered subquestions, use them.\n"
+        "Finish with a final line: The answer is <...>.\n"
+    )
+
+    def _least_to_most_decompose(self, question: str) -> Tuple[List[str], str]:
+        """
+        Stage 1 (paper): Decomposition prompt -> model returns subquestions.
+        Returns: (subquestions, trace_text)
+        """
+        # Minimal “constant examples” are not included here because your domain is medical.
+        # However, we preserve the paper’s REQUIRED decomposition *format* exactly.
+        # :contentReference[oaicite:5]{index=5}
+
+        prompt = (
+            self._L2M_DECOMPOSITION_INSTRUCTIONS
+            + "\nQ: " + question + "\nA:"
+        )
+
+        response, trace = self.model.inference(prompt)
+
+        # Parse: extract quoted subquestions after "we need to know:"
+        # Expected: ... we need to know: "q1", "q2", "q3".
+        subqs = []
+        m = re.search(r"we need to know:\s*(.*)$", response, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            tail = m.group(1)
+            subqs = re.findall(r"\"([^\"]+)\"", tail)
+
+        # Fallback: if the model did not follow quoting, try splitting by commas after colon
+        if not subqs and m:
+            tail = m.group(1).strip()
+            parts = [p.strip(" .\n\t\"") for p in tail.split(",") if p.strip()]
+            # keep only non-empty
+            subqs = [p for p in parts if p]
+
+        # Hard safety: cap number of subquestions to avoid runaway prompts
+        subqs = subqs[:8]
+
+        trace_text = f"[L2M:DECOMPOSE]\nPROMPT:\n{prompt}\n\nRESPONSE:\n{response}\n"
+        return subqs, trace_text
+
+    def _least_to_most_solve(self, original_question: str, subquestions: List[str]) -> Tuple[str, str]:
+        """
+        Stage 2 (paper): sequential solving.
+        Prompt structure: (constant solving instructions/examples) + (Q/A history) + (next Q)
+        and iterate. The original question is appended as the final subproblem. :contentReference[oaicite:6]{index=6}
+        Returns: (final_response_text, trace_text)
+        """
+        # Prepare the ordered list of questions to solve:
+        # paper: solve subquestions, then solve original question last. :contentReference[oaicite:7]{index=7}
+        queue = list(subquestions) + [original_question]
+
+        # Start prompt with constant solving instructions (the “examples” portion).
+        # In the paper, this portion contains exemplars; here we keep the instruction scaffold
+        # but the sequential Q/A accumulation is identical.
+        prompt_prefix = self._L2M_SOLVING_INSTRUCTIONS + "\n"
+
+        history = ""  # grows as: Q: ... \nA: ... \n
+        full_trace = f"[L2M:SOLVE]\nPREFIX:\n{prompt_prefix}\n"
+
+        final_response = ""
+
+        for idx, q in enumerate(queue):
+            prompt = prompt_prefix + history + f"Q: {q}\nA:"
+            resp, trace = self.model.inference(prompt)
+
+            # Append this Q/A to history (paper-style sequential conditioning)
+            history += f"Q: {q}\nA: {resp.strip()}\n"
+
+            full_trace += (
+                f"\n--- STEP {idx+1}/{len(queue)} ---\n"
+                f"PROMPT:\n{prompt}\n\nRESPONSE:\n{resp}\n"
+            )
+
+            final_response = resp.strip()
+
+        return final_response, full_trace
+
+
+
+
+# ---------------------------------------------------------------------------------------------
+
+
+
+  
 
 
 
