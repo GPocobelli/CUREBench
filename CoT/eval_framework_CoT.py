@@ -640,11 +640,10 @@ class CompetitionKit:
             if "meta_question" in example:
                 meta_prompt = (
                     f"{example['meta_question']}\n"
-                    "You are a medical expert evaluator.\n\n"
-                    "REASONING (internal):\n"
-                    "Let's think step by step and map the agent answer to the single best option.\n"
-                    "Choose the single option (A–E) whose text best matches the agent answer.\n"
+                    "You are a helpful assistant who reviews an open-end answer.\n\n"
+                    "Analyze it and choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n\n"
                     "If uncertain, pick the closest match.\n"
+                    "Let's think step by step.\n"
                     "STRICT OUTPUT:\n"
                     "Return exactly one letter A, B, C, D, or E.\n"
                     "No explanation.\n\n"
