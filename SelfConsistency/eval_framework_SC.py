@@ -28,6 +28,7 @@ from tqdm import tqdm
 from abc import ABC, abstractmethod
 import csv
 import re  # needed for fallback and existing extractor patterns
+from collections import Counter
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -102,21 +103,18 @@ class ChatGPTModel(BaseModel):
         )
 
     def inference(self, prompt: str, max_tokens: int = 1024,
-              temperature: float = 0.0, top_p: float = 1.0, top_k: Optional[int] = None):
-    messages = [{"role": "user", "content": prompt}]
-    responses = self.model_client.chat.completions.create(
-        model=self.model_name,
-        messages=messages,
-        max_completion_tokens=8192,
-        temperature=temperature,
-        top_p=top_p,
-    )
+                  temperature: float = 0.0, top_p: float = 1.0, top_k: Optional[int] = None):
+        messages = [{"role": "user", "content": prompt}]
+        responses = self.model_client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            max_completion_tokens=8192,
+            temperature=temperature,
+            top_p=top_p,
+        )
         response = responses.choices[0].message.content
-
-        # Create complete conversation history
         complete_messages = messages + [{"role": "assistant", "content": response}]
-
-                return response, complete_messages
+        return response, complete_messages
 
 # -----------------------------------------------------------------------------------------
 # Qwen
@@ -200,42 +198,38 @@ class LocalModel(BaseModel):
 
     
     def inference(self, prompt: str, max_tokens: int = 1024,
-              temperature: float = 0.0, top_p: float = 1.0, top_k: Optional[int] = None):
-                  messages = [
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": prompt}
-                    ]
-                
-                    input_ids = self.tokenizer.apply_chat_template(
-                        messages, add_generation_prompt=True, return_tensors='pt', enable_thinking=False
-                    ).to(self.model.device)
-                
-                    gen_kwargs = dict(
-                        max_new_tokens=max_tokens,
-                        pad_token_id=self.tokenizer.eos_token_id,
-                    )
-                
-                    # Self-consistency needs sampling; greedy decode is temperature=0.0
-                    if temperature and temperature > 0:
-                        gen_kwargs.update(dict(
-                            do_sample=True,
-                            temperature=temperature,
-                            top_p=top_p,
-                        ))
-                        if top_k is not None:
-                            gen_kwargs["top_k"] = int(top_k)
-                    else:
-                        gen_kwargs.update(dict(
-                            do_sample=False,
-                        ))
-                
-                    outputs = self.model.generate(input_ids, **gen_kwargs)
-                
-                    response = outputs[0][input_ids.shape[-1]:]
-                    response_text = self.tokenizer.decode(response, skip_special_tokens=True)
-                
-                    complete_messages = messages + [{"role": "assistant", "content": response_text}]
-                    return response_text, complete_messages
+                  temperature: float = 0.0, top_p: float = 1.0, top_k: Optional[int] = None):
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt}
+        ]
+    
+        input_ids = self.tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, return_tensors='pt', enable_thinking=False
+        ).to(self.model.device)
+    
+        gen_kwargs = dict(
+            max_new_tokens=max_tokens,
+            pad_token_id=self.tokenizer.eos_token_id,
+        )
+    
+        if temperature and temperature > 0:
+            gen_kwargs.update(dict(
+                do_sample=True,
+                temperature=temperature,
+                top_p=top_p,
+            ))
+            if top_k is not None:
+                gen_kwargs["top_k"] = int(top_k)
+        else:
+            gen_kwargs.update(dict(do_sample=False))
+    
+        outputs = self.model.generate(input_ids, **gen_kwargs)
+        response = outputs[0][input_ids.shape[-1]:]
+        response_text = self.tokenizer.decode(response, skip_special_tokens=True)
+    
+        complete_messages = messages + [{"role": "assistant", "content": response_text}]
+        return response_text, complete_messages
 
 
 class CustomModel(BaseModel):
@@ -598,6 +592,7 @@ class CompetitionKit:
     # =====================================================================
     def _get_prediction_with_trace(self, example: Dict) -> Tuple[Dict, str]:
         """Get model prediction and reasoning trace for a single example"""
+        prediction = {"choice": "", "open_ended_answer": ""}
         question = example["question"]
         question_type = example["question_type"]
 
@@ -782,10 +777,6 @@ class CompetitionKit:
                 choice = self._extract_multiple_choice_answer(response)
                 prediction["choice"] = choice if choice else ""
 
-        elif question_type == "open_ended":
-            prediction["choice"] = "NOTAVALUE"
-            prediction["open_ended_answer"] = response.strip()
-
         return prediction, reasoning_trace
 
 
@@ -793,31 +784,31 @@ class CompetitionKit:
 
 
         
-        from collections import Counter
         
-        def _majority_vote(self, answers: List[str]) -> str:
-            answers = [a for a in answers if a]
-            if not answers:
-                return ""
-            c = Counter(answers)
-            # deterministic tie-break: alphabetical
-            best_count = max(c.values())
-            winners = sorted([k for k, v in c.items() if v == best_count])
-            return winners[0]
         
-        def _sample_responses(self, prompt: str, m: int) -> Tuple[List[str], List[Any]]:
-            responses = []
-            traces = []
-            for _ in range(m):
-                r, t = self.model.inference(
-                    prompt,
-                    temperature=self.sc_temperature,
-                    top_p=self.sc_top_p,
-                    top_k=self.sc_top_k if self.sc_top_k is not None else None,
-                )
-                responses.append((r or "").strip())
-                traces.append(t)
-            return responses, traces
+    def _majority_vote(self, answers: List[str]) -> str:
+        answers = [a for a in answers if a]
+        if not answers:
+            return ""
+        c = Counter(answers)
+        # deterministic tie-break: alphabetical
+        best_count = max(c.values())
+        winners = sorted([k for k, v in c.items() if v == best_count])
+        return winners[0]
+        
+    def _sample_responses(self, prompt: str, m: int) -> Tuple[List[str], List[Any]]:
+        responses = []
+        traces = []
+        for _ in range(m):
+            r, t = self.model.inference(
+                prompt,
+                temperature=self.sc_temperature,
+                top_p=self.sc_top_p,
+                top_k=self.sc_top_k if self.sc_top_k is not None else None,
+            )
+            responses.append((r or "").strip())
+            traces.append(t)
+        return responses, traces
 
 
 
