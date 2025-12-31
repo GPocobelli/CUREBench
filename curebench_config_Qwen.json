@@ -11,11 +11,21 @@
     "average_tools_per_question": "",
     "tool_category_coverage": ""
   },
+  
   "dataset": {
     "dataset_name": "cure_bench_phase_1",
     "dataset_path": "/kaggle/working/CUREBench/cure-bench/curebench_valset_pharse1.jsonl",
     "description": "CureBench questions"
   },
+  
+  "self_consistency": {
+  "enabled": true,
+  "num_paths": 10,
+  "temperature": 0.7,
+  "top_k": 40,
+  "top_p": 1.0
+  }, 
+  
   "output_dir": "competition_results",
   "output_file": "submission.csv"
 }
