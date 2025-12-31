@@ -83,10 +83,8 @@ class ChatGPTModel(BaseModel):
     """ChatGPT/OpenAI model wrapper"""
 
     def load(self, **kwargs):
-        """Load ChatGPT model"""
-
         api_key = os.getenv("AZURE_OPENAI_API_KEY_O1")
-        api_version = "2024-12-01-preview"  # "2025-03-01-preview"
+        api_version = "2024-12-01-preview"
 
         if not api_key:
             raise ValueError("API key not found in environment. Please set the appropriate environment variable.")
@@ -94,27 +92,35 @@ class ChatGPTModel(BaseModel):
         azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
 
         from openai import AzureOpenAI
-        print("Initializing AzureOpenAI client with endpoint:", azure_endpoint)
-        print("Using API version:", api_version)
+        logger.info(f"Initializing AzureOpenAI client with endpoint: {azure_endpoint}")
+        logger.info(f"Using API version: {api_version}")
+
         self.model_client = AzureOpenAI(
             azure_endpoint=azure_endpoint,
             api_key=api_key,
             api_version=api_version,
         )
 
-    def inference(self, prompt: str, max_tokens: int = 1024,
-                  temperature: float = 0.0, top_p: float = 1.0, top_k: Optional[int] = None):
+    def inference(
+        self,
+        prompt: str,
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        top_k: Optional[int] = None,  # Azure chat.completions doesn't support top_k; kept for API compatibility
+    ) -> Tuple[str, List[Dict]]:
         messages = [{"role": "user", "content": prompt}]
         responses = self.model_client.chat.completions.create(
             model=self.model_name,
             messages=messages,
-            max_completion_tokens=8192,
+            max_completion_tokens=max_tokens,  # FIX: respect caller's max_tokens
             temperature=temperature,
             top_p=top_p,
         )
-        response = responses.choices[0].message.content
+        response = responses.choices[0].message.content or ""
         complete_messages = messages + [{"role": "assistant", "content": response}]
         return response, complete_messages
+
 
 # -----------------------------------------------------------------------------------------
 # Qwen
@@ -584,6 +590,21 @@ class CompetitionKit:
 
         return dataset_list
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
     # =====================================================================
     # FIXED: CoT-safe prompts + syntactically safe meta_prompt
     # - Replaces _get_prediction_with_trace with CoT-safe prompts
@@ -596,22 +617,30 @@ class CompetitionKit:
         question = example["question"]
         question_type = example["question_type"]
 
+
+
+        # ------------------------------------------------------------------------------------
+        # multi_choice
+        # ------------------------------------------------------------------------------------
+        
         if question_type == "multi_choice":
             prompt = (
                 "The following is a multi_choice question.\n"
                 "You are a medical expert that answers multiple choice questions about medical knowledge.\n\n"
-                "REASONING (internal):\n"
-                "Before answering, let's think step by step and break it down into sub-problems.\n"
-                "STRICT OUTPUT:\n"
-                "Return EXACTLY ONE LETTER: A, B, C, D, or E.\n"
-                "No punctuation, no words, no explanation.\n\n"
+                "INSTRUCTIONS:\n"
+                "- Before answering, let's think step by step and break it down into sub-problems.\n"
+                "- Then provide the final answer in exactly this format:\n"
+                "  The answer is X.\n"
+                "  where X is one of A, B, C, D, E.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
-                "FINAL ANSWER (one letter only):"
             )
+
+            
             if self.sc_enabled:
-                # 1) sample m candidate outputs  2) majority vote over answers (A–E)
+               # Self-Consistency: sample multiple reasoning paths, then majority vote on final answers.
                 responses, traces = self._sample_responses(prompt, self.sc_num_paths)
+                
                 choices = [self._extract_multiple_choice_answer(r) for r in responses]
                 final_choice = self._majority_vote(choices)
     
@@ -642,6 +671,15 @@ class CompetitionKit:
             prediction["open_ended_answer"] = (response or "").strip()
             return prediction, reasoning_trace
 
+
+
+
+
+        
+        # ------------------------------------------------------------------------------------
+        # OPEN-ENDED 
+        # ------------------------------------------------------------------------------------
+    
         elif question_type == "open_ended":
             prompt = (
                 "The following is a open_ended question.\n"
@@ -662,44 +700,51 @@ class CompetitionKit:
             prediction["open_ended_answer"] = (response or "").strip()
             return prediction, reasoning_trace
 
+
+
+        
+        # ------------------------------------------------------------------------------------
+        # open_ended_multi_choice 
+        # ------------------------------------------------------------------------------------
+        
         elif question_type == "open_ended_multi_choice":
             prompt = (
                 "The following is a open_ended_multi_choice question.\n"
                 "You are a medical expert that answers open-end questions about medical knowledge.\n\n"
                 "REASONING (internal):\n"
                 "Before answering, let's think step by step and break it down into sub-problems.\n"
-                "OUTPUT FORMAT:\n"
+                "INSTRUCTIONS:\n"
                 "- Answer in 1-3 bullet points.\n"
                 "Each bullet MUST include concrete identifiers from the options (e.g. drug names, regimen, placebo vs active).\n"
                 "- Do NOT mention option letters (A, B, C, D, or E) in this step.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
-                "ANSWER (bullets):"
+                "ANSWER:"
             )
 
             if self.sc_enabled:
                 # sample diverse agent answers
                 responses, traces = self._sample_responses(prompt, self.sc_num_paths)
     
-                choices = []
-                meta_traces = []
-    
+                # If meta_question exists, we map each sampled response to a letter deterministically
                 if "meta_question" in example:
-                    # For each sampled response, map to A–E (fixed set), then majority vote
+                    choices = []
+                    meta_traces = []
+    
                     for r in responses:
                         meta_prompt = (
                             f"{example['meta_question']}\n"
                             "You are a helpful assistant who reviews an open-end answer.\n\n"
+                            "Given the agent answer below, choose the single best matching option.\n"
                             "Analyze it and choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n\n"
                             "If uncertain, pick the closest match.\n"
                             "Let's think step by step.\n"
 
                             "STRICT OUTPUT:\n"
                             "Return exactly one letter A, B, C, D, or E.\n"
-                            "No explanation.\n\n"
+                            "No extra text.\n\n"
                             "Agent's answer:\n"
                             f"{r}\n\n"
-                            "FINAL ANSWER (one letter only):"
                         )
 
                         # mapping can be greedy (temperature=0) to reduce noise in the mapper
@@ -757,27 +802,34 @@ class CompetitionKit:
             if "meta_question" in example:
                 meta_prompt = (
                     f"{example['meta_question']}\n"
-                    "You are a medical expert evaluator.\n\n"
-                    "REASONING (internal):\n"
-                    "Let's think step by step and map the agent answer to the single best option.\n"
-                    "Choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n"
+                    "You are a helpful assistant who reviews an open-end answer.\n\n"
+                    "Given the agent answer below, choose the single best matching option.\n"
+                    "Analyze it and choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n\n"
                     "If uncertain, pick the closest match.\n"
+                    "Let's think step by step.\n"
                     "STRICT OUTPUT:\n"
                     "Return exactly one letter A, B, C, D, or E.\n"
-                    "No explanation.\n\n"
+                    "No extra text.\n\n"
                     "Agent's answer:\n"
                     f"{response.strip()}\n\n"
-                    "FINAL ANSWER (one letter only):"
                 )
-                meta_response, meta_reasoning = self.model.inference(meta_prompt)
-                reasoning_trace += meta_reasoning
+                
+                meta_response, meta_reasoning = self.model.inference(meta_prompt, temperature=0.0)
+                # Keep traces separate but concatenate for compatibility with your existing storage
+                try:
+                    reasoning_trace = list(reasoning_trace) + list(meta_reasoning)
+                except Exception:
+                    pass
                 choice = self._extract_multiple_choice_answer(meta_response)
                 prediction["choice"] = choice if choice else ""
             else:
                 choice = self._extract_multiple_choice_answer(response)
                 prediction["choice"] = choice if choice else ""
-
-        return prediction, reasoning_trace
+    
+            return prediction, reasoning_trace
+    
+        # Safety fallback
+        return prediction, "Unsupported question_type"
 
 
 
@@ -854,6 +906,10 @@ class CompetitionKit:
 
         return ""
 
+
+
+
+    
     # ---------------------------------------------------------------------
     # Everything below here is unchanged from your provided script
     # ---------------------------------------------------------------------
