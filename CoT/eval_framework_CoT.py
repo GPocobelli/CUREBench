@@ -62,14 +62,7 @@ class BaseModel(ABC):
         pass
 
     @abstractmethod
-    def inference(
-    self,
-    prompt: str,
-    max_tokens: int = 1024,
-    temperature: float = 0.0,      # added
-    top_p: float = 1.0,            # added
-    top_k: Optional[int] = None,   # added
-) -> Tuple[str, List[Dict]]:
+    def inference(self, prompt: str, max_tokens: int = 1024) -> Tuple[str, List[Dict]]:
         """Run inference on the model
 
         Returns:
@@ -101,16 +94,15 @@ class ChatGPTModel(BaseModel):
             api_version=api_version,
         )
 
-    def inference(self, prompt: str, max_tokens: int = 1024,
-              temperature: float = 0.0, top_p: float = 1.0, top_k: Optional[int] = None):
-    messages = [{"role": "user", "content": prompt}]
-    responses = self.model_client.chat.completions.create(
-        model=self.model_name,
-        messages=messages,
-        max_completion_tokens=8192,
-        temperature=temperature,
-        top_p=top_p,
-    )
+    def inference(self, prompt: str, max_tokens: int = 1024) -> Tuple[str, List[Dict]]:
+        """ChatGPT inference"""
+        messages = [{"role": "user", "content": prompt}]
+
+        responses = self.model_client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            max_completion_tokens=8192,
+        )
         response = responses.choices[0].message.content
 
         # Create complete conversation history
@@ -199,43 +191,36 @@ class LocalModel(BaseModel):
 
 
     
-    def inference(self, prompt: str, max_tokens: int = 1024,
-              temperature: float = 0.0, top_p: float = 1.0, top_k: Optional[int] = None):
-                  messages = [
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": prompt}
-                    ]
-                
-                    input_ids = self.tokenizer.apply_chat_template(
-                        messages, add_generation_prompt=True, return_tensors='pt', enable_thinking=False
-                    ).to(self.model.device)
-                
-                    gen_kwargs = dict(
-                        max_new_tokens=max_tokens,
-                        pad_token_id=self.tokenizer.eos_token_id,
-                    )
-                
-                    # Self-consistency needs sampling; greedy decode is temperature=0.0
-                    if temperature and temperature > 0:
-                        gen_kwargs.update(dict(
-                            do_sample=True,
-                            temperature=temperature,
-                            top_p=top_p,
-                        ))
-                        if top_k is not None:
-                            gen_kwargs["top_k"] = int(top_k)
-                    else:
-                        gen_kwargs.update(dict(
-                            do_sample=False,
-                        ))
-                
-                    outputs = self.model.generate(input_ids, **gen_kwargs)
-                
-                    response = outputs[0][input_ids.shape[-1]:]
-                    response_text = self.tokenizer.decode(response, skip_special_tokens=True)
-                
-                    complete_messages = messages + [{"role": "assistant", "content": response_text}]
-                    return response_text, complete_messages
+    def inference(self, prompt: str, max_tokens: int = 1024) -> Tuple[str, List[Dict]]:
+        """Local model inference"""
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt}
+        ]
+
+        print("messages:", messages)
+
+        input_ids = self.tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, return_tensors='pt', enable_thinking=False
+        ).to(self.model.device)
+
+        outputs = self.model.generate(
+            input_ids,
+            temperature=0.4,
+            top_p=0.9,
+            max_new_tokens=max_tokens,
+            pad_token_id=self.tokenizer.eos_token_id,
+            do_sample=False
+        )
+
+        response = outputs[0][input_ids.shape[-1]:]
+        response_text = self.tokenizer.decode(response, skip_special_tokens=True)
+        print("response_text:", response_text)
+
+        # Create complete conversation history
+        complete_messages = messages + [{"role": "assistant", "content": response_text}]
+
+        return response_text, complete_messages
 
 
 class CustomModel(BaseModel):
@@ -410,19 +395,10 @@ class CompetitionKit:
 
         self.config = json.load(open(config_path, 'r')) if config_path else {}
 
-        self.self_consistency = self.config.get("self_consistency", {})
-        self.sc_enabled = bool(self.self_consistency.get("enabled", False))
-        self.sc_num_paths = int(self.self_consistency.get("num_paths", 10))
-        self.sc_temperature = float(self.self_consistency.get("temperature", 0.7))
-        self.sc_top_k = self.self_consistency.get("top_k", 40)  # can be None
-        self.sc_top_p = float(self.self_consistency.get("top_p", 1.0))
-
         self.output_dir = self.config.get('output_dir', 'results')
         os.makedirs(self.output_dir, exist_ok=True)
 
         self.datasets = self._load_dataset_configs(self.config)
-
-
 
     def load_model(self, model_name: str, model_type: str = "auto", **kwargs):
         self.model_name = model_name
@@ -604,7 +580,7 @@ class CompetitionKit:
         if question_type == "multi_choice":
             prompt = (
                 "The following is a multi_choice question.\n"
-                "You are a medical expert that answers multiple choice questions about medical knowledge.\n\n"
+                "You are a medical expert.\n\n"
                 "REASONING (internal):\n"
                 "Before answering, let's think step by step and break it down into sub-problems.\n"
                 "STRICT OUTPUT:\n"
@@ -614,43 +590,11 @@ class CompetitionKit:
                 f"{question}\n\n"
                 "FINAL ANSWER (one letter only):"
             )
-            if self.sc_enabled:
-                # 1) sample m candidate outputs  2) majority vote over answers (A–E)
-                responses, traces = self._sample_responses(prompt, self.sc_num_paths)
-                choices = [self._extract_multiple_choice_answer(r) for r in responses]
-                final_choice = self._majority_vote(choices)
-    
-                prediction["choice"] = final_choice if final_choice else ""
-                # store a representative string (optional): first response matching final_choice
-                rep = ""
-                for r, c in zip(responses, choices):
-                    if c == final_choice and r:
-                        rep = r
-                        break
-                prediction["open_ended_answer"] = rep or (responses[0] if responses else "")
-    
-                reasoning_trace = {
-                    "self_consistency": True,
-                    "num_paths": self.sc_num_paths,
-                    "votes": dict(Counter(choices)),
-                    "samples": [
-                        {"response": r, "choice": c, "trace": t}
-                        for r, c, t in zip(responses, choices, traces)
-                    ],
-                }
-                return prediction, json.dumps(reasoning_trace)
-    
-            # --- fallback: single decode (your current behavior) ---
-            response, reasoning_trace = self.model.inference(prompt, temperature=0.0)
-            choice = self._extract_multiple_choice_answer(response)
-            prediction["choice"] = choice if choice else ""
-            prediction["open_ended_answer"] = (response or "").strip()
-            return prediction, reasoning_trace
 
         elif question_type == "open_ended":
             prompt = (
                 "The following is a open_ended question.\n"
-                "You are a medical expert that answers open-end questions about medical knowledge.\n\n"
+                "You are a medical expert.\n\n"
                 "REASONING (internal):\n"
                 "Before answering, let's think step by step and break it down into sub-problems.\n"
                 "OUTPUT FORMAT:\n"
@@ -662,102 +606,36 @@ class CompetitionKit:
                 f"{question}\n\n"
                 "ANSWER:"
             )
-            response, reasoning_trace = self.model.inference(prompt, temperature=0.0)
-            prediction["choice"] = "NOTAVALUE"
-            prediction["open_ended_answer"] = (response or "").strip()
-            return prediction, reasoning_trace
 
         elif question_type == "open_ended_multi_choice":
             prompt = (
                 "The following is a open_ended_multi_choice question.\n"
-                "You are a medical expert that answers open-end questions about medical knowledge.\n\n"
+                "You are a medical expert.\n\n"
                 "REASONING (internal):\n"
                 "Before answering, let's think step by step and break it down into sub-problems.\n"
                 "OUTPUT FORMAT:\n"
                 "- Answer in 1-3 bullet points.\n"
-                "Each bullet MUST include concrete identifiers from the options (e.g. drug names, regimen, placebo vs active).\n"
-                "- Do NOT mention option letters (A, B, C, D, or E) in this step.\n\n"
+                "Each bullet MUST include concrete identifiers from the options (drug names, regimen, placebo vs active).\n"
+                "- Do NOT mention option letters (A–E) in this step.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
                 "ANSWER (bullets):"
             )
 
-            if self.sc_enabled:
-                # sample diverse agent answers
-                responses, traces = self._sample_responses(prompt, self.sc_num_paths)
-    
-                choices = []
-                meta_traces = []
-    
-                if "meta_question" in example:
-                    # For each sampled response, map to A–E (fixed set), then majority vote
-                    for r in responses:
-                        meta_prompt = (
-                            f"{example['meta_question']}\n"
-                            "You are a helpful assistant who reviews an open-end answer.\n\n"
-                            "Analyze it and choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n\n"
-                            "If uncertain, pick the closest match.\n"
-                            "Let's think step by step.\n"
+        else:
+            raise ValueError(f"Unsupported question type: {question_type}")
 
-                            "STRICT OUTPUT:\n"
-                            "Return exactly one letter A, B, C, D, or E.\n"
-                            "No explanation.\n\n"
-                            "Agent's answer:\n"
-                            f"{r}\n\n"
-                            "FINAL ANSWER (one letter only):"
-                        )
+        response, reasoning_trace = self.model.inference(prompt)
 
-                        # mapping can be greedy (temperature=0) to reduce noise in the mapper
-                        mr, mt = self.model.inference(meta_prompt, temperature=0.0)
-                        meta_traces.append(mt)
-                        choices.append(self._extract_multiple_choice_answer(mr))
-    
-                    final_choice = self._majority_vote(choices)
-                    prediction["choice"] = final_choice if final_choice else ""
-    
-                    # representative open answer whose mapped choice equals the final vote
-                    rep = ""
-                    for r, c in zip(responses, choices):
-                        if c == final_choice and r:
-                            rep = r
-                            break
-                    prediction["open_ended_answer"] = rep or (responses[0] if responses else "")
-    
-                    reasoning_trace = {
-                        "self_consistency": True,
-                        "num_paths": self.sc_num_paths,
-                        "votes": dict(Counter(choices)),
-                        "samples": [
-                            {
-                                "response": r,
-                                "mapped_choice": c,
-                                "trace": t,
-                                "meta_trace": mt,
-                            }
-                            for r, c, t, mt in zip(responses, choices, traces, meta_traces)
-                        ],
-                    }
-                    return prediction, json.dumps(reasoning_trace)
-    
-                # no meta_question: fall back to extracting choice directly from responses
-                choices = [self._extract_multiple_choice_answer(r) for r in responses]
-                final_choice = self._majority_vote(choices)
-                prediction["choice"] = final_choice if final_choice else ""
-                prediction["open_ended_answer"] = responses[0] if responses else ""
-                reasoning_trace = {
-                    "self_consistency": True,
-                    "num_paths": self.sc_num_paths,
-                    "votes": dict(Counter(choices)),
-                    "samples": [
-                        {"response": r, "choice": c, "trace": t}
-                        for r, c, t in zip(responses, choices, traces)
-                    ],
-                }
-                return prediction, json.dumps(reasoning_trace)
-    
-            # --- fallback single decode (your current behavior) ---
-            response, reasoning_trace = self.model.inference(prompt, temperature=0.0)
-            prediction["open_ended_answer"] = (response or "").strip()
+        prediction = {"choice": "", "open_ended_answer": ""}
+
+        if question_type == "multi_choice":
+            choice = self._extract_multiple_choice_answer(response)
+            prediction["choice"] = choice if choice else ""
+            prediction["open_ended_answer"] = response.strip()
+
+        elif question_type == "open_ended_multi_choice":
+            prediction["open_ended_answer"] = response.strip()
 
             if "meta_question" in example:
                 meta_prompt = (
@@ -765,7 +643,7 @@ class CompetitionKit:
                     "You are a medical expert evaluator.\n\n"
                     "REASONING (internal):\n"
                     "Let's think step by step and map the agent answer to the single best option.\n"
-                    "Choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n"
+                    "Choose the single option (A–E) whose text best matches the agent answer.\n"
                     "If uncertain, pick the closest match.\n"
                     "STRICT OUTPUT:\n"
                     "Return exactly one letter A, B, C, D, or E.\n"
@@ -787,55 +665,6 @@ class CompetitionKit:
             prediction["open_ended_answer"] = response.strip()
 
         return prediction, reasoning_trace
-
-
-
-
-
-        
-        from collections import Counter
-        
-        def _majority_vote(self, answers: List[str]) -> str:
-            answers = [a for a in answers if a]
-            if not answers:
-                return ""
-            c = Counter(answers)
-            # deterministic tie-break: alphabetical
-            best_count = max(c.values())
-            winners = sorted([k for k, v in c.items() if v == best_count])
-            return winners[0]
-        
-        def _sample_responses(self, prompt: str, m: int) -> Tuple[List[str], List[Any]]:
-            responses = []
-            traces = []
-            for _ in range(m):
-                r, t = self.model.inference(
-                    prompt,
-                    temperature=self.sc_temperature,
-                    top_p=self.sc_top_p,
-                    top_k=self.sc_top_k if self.sc_top_k is not None else None,
-                )
-                responses.append((r or "").strip())
-                traces.append(t)
-            return responses, traces
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     def _extract_multiple_choice_answer(self, response: str) -> str:
         """Extract letter answer from model response"""
