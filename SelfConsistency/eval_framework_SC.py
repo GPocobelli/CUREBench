@@ -200,16 +200,16 @@ class LocalModel(BaseModel):
 
         if self.tokenizer.pad_token_id is None:
         # safest fallback: use eos as pad token (common for decoder-only LMs)
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-    
-        pad_id = self.tokenizer.pad_token_id
-        attention_mask = (input_ids != pad_id).long()
-
+            self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        gen_kwargs = dict(
-                max_new_tokens=max_tokens,
-                pad_token_id=pad_id, 
-        )
+            pad_id = self.tokenizer.pad_token_id
+            attention_mask = (input_ids != pad_id).long()
+    
+            
+            gen_kwargs = dict(
+                    max_new_tokens=max_tokens,
+                    pad_token_id=pad_id, 
+            )
 
         if temperature and temperature > 0:
             gen_kwargs.update(
