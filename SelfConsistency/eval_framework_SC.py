@@ -162,7 +162,7 @@ class LocalModel(BaseModel):
                 from transformers import BitsAndBytesConfig
                 model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
 
-            self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
+            self.model = AutoModelForCausalLM.from_pretrained(self.model_name, local_files_only=True, **model_kwargs)
             logger.info(f"Loaded local model: {self.model_name} (8bit={use_8bit})")
 
         except ImportError as e:
