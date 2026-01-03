@@ -207,7 +207,7 @@ class LocalModel(BaseModel):
             # Model (local path)
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
-                local_files_only=True,
+                local_files_only=False,
                 **model_kwargs
             )
 
