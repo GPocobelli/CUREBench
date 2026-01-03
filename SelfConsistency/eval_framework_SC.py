@@ -205,28 +205,44 @@ class LocalModel(BaseModel):
     
     def inference(self, prompt: str, max_tokens: int = 1024,
                   temperature: float = 0.0, top_p: float = 1.0, top_k: Optional[int] = None):
+        import torch
+    
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": prompt}
         ]
     
         input_ids = self.tokenizer.apply_chat_template(
-    messages, add_generation_prompt=True, return_tensors='pt', enable_thinking=False
+            messages,
+            add_generation_prompt=True,
+            return_tensors="pt",
+            enable_thinking=False
         ).to(self.model.device)
-
-        # Wenn du batch_size=1 und ohne Padding arbeitest, ist attention_mask = 1 überall korrekt.
+    
         attention_mask = torch.ones_like(input_ids, dtype=torch.long)
-        
+    
+        gen_kwargs = dict(
+            max_new_tokens=max_tokens,
+            do_sample=(temperature and temperature > 0.0),
+            temperature=float(temperature),
+            top_p=float(top_p),
+            pad_token_id=self.tokenizer.pad_token_id,
+        )
+        if top_k is not None:
+            gen_kwargs["top_k"] = int(top_k)
+    
         outputs = self.model.generate(
-            input_ids,
+            input_ids=input_ids,
             attention_mask=attention_mask,
             **gen_kwargs
         )
-        response = outputs[0][input_ids.shape[-1]:]
-        response_text = self.tokenizer.decode(response, skip_special_tokens=True)
+    
+        response_tokens = outputs[0][input_ids.shape[-1]:]
+        response_text = self.tokenizer.decode(response_tokens, skip_special_tokens=True)
     
         complete_messages = messages + [{"role": "assistant", "content": response_text}]
         return response_text, complete_messages
+
 
 
 class CustomModel(BaseModel):
@@ -332,7 +348,7 @@ class GPTOSS20BModel(BaseModel):
         messages.append({"role": "user", "content": prompt})
 
         try:
-             = self.tokenizer.apply_chat_template(
+            input_ids = self.tokenizer.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
                 return_tensors="pt",
@@ -342,6 +358,7 @@ class GPTOSS20BModel(BaseModel):
                 builtin_tools=builtin_tools,
                 tools=tools,
             ).to(self.model.device)
+
         except Exception as e:
             logging.warning(
                 f"[WARN] Custom chat_template in {self.model_name} failed "
@@ -349,7 +366,7 @@ class GPTOSS20BModel(BaseModel):
             )
             base_tok = AutoTokenizer.from_pretrained("openai/gpt-oss-20b")
             self.tokenizer.chat_template = base_tok.chat_template
-             = self.tokenizer.apply_chat_template(
+             input_ids = self.tokenizer.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
                 return_tensors="pt",
@@ -358,7 +375,7 @@ class GPTOSS20BModel(BaseModel):
                     or "You are ChatGPT, a large language model trained by OpenAI.",
                 builtin_tools=builtin_tools,
                 tools=tools,
-            ).to(self.model.device)
+             ).to(self.model.device)
 
         outputs = self.model.generate(
             input_ids,
