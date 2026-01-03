@@ -810,7 +810,7 @@ class CompetitionKit:
     
                 return prediction, reasoning_trace
     
-            raise ValueError(f"Unsupported question type: {question_type}")
+            #raise ValueError(f"Unsupported question type: {question_type}")
     
         # ============================================================
         # Otherwise: your existing CoT-safe logic (unchanged)
