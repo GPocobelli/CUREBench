@@ -142,7 +142,7 @@ class ChatGPTModel(BaseModel):
     # Llama
 
     class LocalModel(BaseModel):
-    """Local HuggingFace model wrapper"""
+    #"""Local HuggingFace model wrapper"""
 
     def load(self, **kwargs):
         try:
