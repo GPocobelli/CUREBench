@@ -165,8 +165,7 @@ class LocalModel(BaseModel):
 
             # Tokenizer (local path)
             self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_name,
-                local_files_only=True
+                self.model_name
             )
 
             model_kwargs = dict(
