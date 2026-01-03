@@ -1121,43 +1121,43 @@ class CompetitionKit:
         return metadata
 
 
-def create_metadata_parser() -> argparse.ArgumentParser:
-    """
-    Create command line argument parser for metadata
-    
-    Returns:
-        ArgumentParser with metadata-related arguments
-    """
-    parser = argparse.ArgumentParser(description='Evaluation Framework with Metadata Support')
-    
-    # Model information
-    parser.add_argument('--model-name', type=str, help='Name of the model')
-    parser.add_argument('--model-type', type=str, help='Type of model wrapper')
-    parser.add_argument('--base-model-name', type=str, help='Name of the base model')
-    parser.add_argument('--base-model-type', type=str, choices=['API', 'OpenWeighted'], 
-                       help='Type of base model (API or OpenWeighted)')
-    
-    # Track information
-    parser.add_argument('--track', type=str, choices=['internal_reasoning', 'agentic_reasoning'],
-                       default='internal_reasoning', help='Competition track')
-    
-    # Dataset and submission info
-    parser.add_argument('--dataset', type=str, help='Dataset name')
-    parser.add_argument('--additional-info', type=str, help='Additional information about the submission')
-    
-    # Configuration file
-    parser.add_argument('--config', type=str, help='Path to configuration file (JSON or YAML)')
-    
-    # Output settings
-    parser.add_argument('--output-dir', type=str, default='competition_results', 
-                       help='Output directory for results')
-    parser.add_argument('--output-file', type=str, default='submission.csv', 
-                       help='Output CSV filename for submission (will be packaged in zip)')
-    
-    # Evaluation settings
-    parser.add_argument('--subset-size', type=int, help='Limit evaluation to N examples')
-    
-    return parser
+    def create_metadata_parser() -> argparse.ArgumentParser:
+        """
+        Create command line argument parser for metadata
+        
+        Returns:
+            ArgumentParser with metadata-related arguments
+        """
+        parser = argparse.ArgumentParser(description='Evaluation Framework with Metadata Support')
+        
+        # Model information
+        parser.add_argument('--model-name', type=str, help='Name of the model')
+        parser.add_argument('--model-type', type=str, help='Type of model wrapper')
+        parser.add_argument('--base-model-name', type=str, help='Name of the base model')
+        parser.add_argument('--base-model-type', type=str, choices=['API', 'OpenWeighted'], 
+                           help='Type of base model (API or OpenWeighted)')
+        
+        # Track information
+        parser.add_argument('--track', type=str, choices=['internal_reasoning', 'agentic_reasoning'],
+                           default='internal_reasoning', help='Competition track')
+        
+        # Dataset and submission info
+        parser.add_argument('--dataset', type=str, help='Dataset name')
+        parser.add_argument('--additional-info', type=str, help='Additional information about the submission')
+        
+        # Configuration file
+        parser.add_argument('--config', type=str, help='Path to configuration file (JSON or YAML)')
+        
+        # Output settings
+        parser.add_argument('--output-dir', type=str, default='competition_results', 
+                           help='Output directory for results')
+        parser.add_argument('--output-file', type=str, default='submission.csv', 
+                           help='Output CSV filename for submission (will be packaged in zip)')
+        
+        # Evaluation settings
+        parser.add_argument('--subset-size', type=int, help='Limit evaluation to N examples')
+        
+        return parser
 
 def load_config_file(config_path):
     if not os.path.exists(config_path):
