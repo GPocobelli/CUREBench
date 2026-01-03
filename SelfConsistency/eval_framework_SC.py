@@ -489,6 +489,10 @@ class CompetitionKit:
                 question_type = example["question_type"]
                 expected_answer = example.get("answer")
                 print("expected_answer:", expected_answer)
+                print("predicted_choice:", prediction.get("choice", ""))
+                # optional:
+                print("predicted_text_head:", (prediction.get("open_ended_answer", "") or "")[:120])
+
 
                 if question_type == "multi_choice" or question_type == "open_ended_multi_choice":
                     if expected_answer != '':
