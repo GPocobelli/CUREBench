@@ -754,26 +754,39 @@ class CompetitionKit:
         # ============================================================
         # Least-to-Most prompting (two-stage) branch
         # ============================================================
-        if getattr(self, "prompting_strategy", "cot_safe") == "least_to_most":
-            subqs, trace_decomp = self._least_to_most_decompose(question)
-            final_resp, trace_solve = self._least_to_most_solve(question, subqs)
+        # if getattr(self, "prompting_strategy", "cot_safe") == "least_to_most":
+        #     subqs, trace_decomp = self._least_to_most_decompose(question)
+        #     final_resp, trace_solve = self._least_to_most_solve(question, subqs)
     
-            reasoning_trace = trace_decomp + "\n" + trace_solve
+        #     reasoning_trace = trace_decomp + "\n" + trace_solve
     
-            if question_type == "open_ended":
+        #     if question_type == "open_ended":
+        #         prediction["choice"] = "NOTAVALUE"
+        #         prediction["open_ended_answer"] = final_resp
+        #         return prediction, reasoning_trace
+    
+        #     if question_type == "multi_choice":
+        #         choice, trace_mc = self._force_mc_letter(question, final_resp)
+        #         prediction["choice"] = choice if choice else ""
+        #         prediction["open_ended_answer"] = final_resp
+        #         return prediction, reasoning_trace + "\n" + trace_mc
+    
+        #     if question_type == "open_ended_multi_choice":
+        #         prediction["open_ended_answer"] = final_resp
+            if getattr(self, "prompting_strategy", "cot_safe") == "least_to_most":
+            # L2M NUR für open_ended sinnvoll (bei kleinen lokalen Modellen)
+            if question_type in ("multi_choice", "open_ended_multi_choice"):
+                # fall back auf deinen bestehenden CoT-safe Pfad:
+                # (einfach so tun, als wäre prompting_strategy != least_to_most)
+                pass
+            else:
+                subqs, trace_decomp = self._least_to_most_decompose(question)
+                final_resp, trace_solve = self._least_to_most_solve(question, subqs)
+        
+                reasoning_trace = trace_decomp + "\n" + trace_solve
                 prediction["choice"] = "NOTAVALUE"
                 prediction["open_ended_answer"] = final_resp
                 return prediction, reasoning_trace
-    
-            if question_type == "multi_choice":
-                choice, trace_mc = self._force_mc_letter(question, final_resp)
-                prediction["choice"] = choice if choice else ""
-                prediction["open_ended_answer"] = final_resp
-                return prediction, reasoning_trace + "\n" + trace_mc
-    
-            if question_type == "open_ended_multi_choice":
-                prediction["open_ended_answer"] = final_resp
-    
                 # use existing meta_question if provided (preferred)
                 if "meta_question" in example:
                     meta_prompt = (
