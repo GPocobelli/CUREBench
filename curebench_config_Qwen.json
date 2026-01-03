@@ -1,9 +1,9 @@
 {
   "metadata": {
     "model_name": "Qwen/Qwen3-0.6B",
-    "model_type": "OpenWeightedModel",
+    "model_type": "local",
     "track": "internal_reasoning",
-    "base_model_type": "OpenWeighted",
+    "base_model_type": "local",
     "base_model_name": "Qwen/Qwen3-0.6B",
     "dataset": "cure_bench_phase_1",
     "additional_info": "",
