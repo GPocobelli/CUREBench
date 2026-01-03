@@ -613,45 +613,50 @@ class CompetitionKit:
     )
 
     def _least_to_most_decompose(self, question: str) -> Tuple[List[str], str]:
-        """
-        Stage 1 (paper): Decomposition prompt -> model returns subquestions.
-        Returns: (subquestions, trace_text)
-        """
-        # Minimal “constant examples” are not included here because your domain is medical.
-        # However, we preserve the paper’s REQUIRED decomposition *format* exactly.
-        # :contentReference[oaicite:5]{index=5}
-
-        prompt = f"{self._least_to_most_decompose}\nQUESTION:\n{question}\nSUBQUESTIONS:\n"
+        prompt = (
+            f"{self._L2M_DECOMPOSITION_INSTRUCTIONS}\n"
+            f"QUESTION:\n{question}\n"
+            f"SUBQUESTIONS:\n"
+        )
         resp, trace = self.model.inference(prompt)
     
         lines = [l.strip() for l in resp.splitlines() if l.strip()]
     
         subqs: List[str] = []
     
-        # 1) bullet style: "- ..."
+        # bullet style "- ..."
         for l in lines:
             if l.startswith("-"):
                 sq = l.lstrip("-").strip()
                 if sq:
                     subqs.append(sq)
     
-        # 2) quoted style: "<...>"
+        # quoted style
         if not subqs:
             subqs = re.findall(r"\"([^\"]+)\"", resp)
     
-        # 3) fallback: if model returned a single sentence with commas
+        # fallback split
         if not subqs:
-            # remove leading "To answer..." boilerplate if present
             cleaned = re.sub(r"(?is).*we need to know:\s*", "", resp).strip()
             parts = [p.strip(" \n\t-•\".()") for p in cleaned.split(",") if p.strip()]
             subqs = [p for p in parts if len(p) > 5]
     
-        # safety caps
-        subqs = subqs[:8]
+        # HARD FILTER: rauswerfen, was wie eine direkte Antwort aussieht
+        def looks_like_answer(s: str) -> bool:
+            s_up = s.upper()
+            return (
+                "THE CORRECT ANSWER" in s_up
+                or "THE ANSWER IS" in s_up
+                or re.search(r"\b[A-D]\s*:", s_up) is not None  # option patterns
+            )
+    
+        subqs = [q for q in subqs if not looks_like_answer(q)]
+    
+        # cap
+        subqs = subqs[:6]
     
         trace_text = f"[L2M:DECOMPOSE]\nPROMPT:\n{prompt}\n\nRESPONSE:\n{resp}\n"
         return subqs, trace_text
-
 
 
     
@@ -664,10 +669,9 @@ class CompetitionKit:
         """
         # Solve subquestions, then original question
         queue = list(subquestions) + [original_question]
-    
+
         history = ""
         full_trace = "[L2M:SOLVE]\n"
-    
         last_answer = ""
     
         for i, q in enumerate(queue, start=1):
@@ -687,6 +691,27 @@ class CompetitionKit:
         return last_answer, full_trace
 
 
+
+
+
+    def _force_mc_letter(self, question_with_options: str, context_answer: str) -> Tuple[str, str]:
+        prompt = (
+            "You are a medical expert.\n"
+            "Use the context if helpful, but answer the multiple-choice question.\n"
+            "STRICT OUTPUT: return exactly one letter A, B, C, D, or E.\n\n"
+            "CONTEXT:\n"
+            f"{context_answer}\n\n"
+            "QUESTION:\n"
+            f"{question_with_options}\n\n"
+            "FINAL ANSWER (one letter only):"
+        )
+        resp, trace = self.model.inference(prompt)
+        choice = self._extract_multiple_choice_answer(resp)
+        return choice, f"[L2M:FINAL_MC]\nPROMPT:\n{prompt}\n\nRESPONSE:\n{resp}\n"
+
+
+
+    
 
 
 
@@ -741,11 +766,10 @@ class CompetitionKit:
                 return prediction, reasoning_trace
     
             if question_type == "multi_choice":
-                # force proper A–E via mapping step
-                choice, trace_map = self._l2m_map_to_choice(question, final_resp)
+                choice, trace_mc = self._force_mc_letter(question, final_resp)
                 prediction["choice"] = choice if choice else ""
                 prediction["open_ended_answer"] = final_resp
-                return prediction, reasoning_trace + "\n" + trace_map
+                return prediction, reasoning_trace + "\n" + trace_mc
     
             if question_type == "open_ended_multi_choice":
                 prediction["open_ended_answer"] = final_resp
