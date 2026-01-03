@@ -598,18 +598,18 @@ class CompetitionKit:
     # :contentReference[oaicite:3]{index=3} :contentReference[oaicite:4]{index=4}
 
     _L2M_DECOMPOSITION_INSTRUCTIONS = (
-        "Decompose the question into a list of simpler subquestions.\n"
-        "Use EXACTLY this format:\n"
-        "To answer the question \"<original question>\", we need to know: "
-        "\"<subquestion 1>\", \"<subquestion 2>\", ...\n"
-        "Only include subquestions that are necessary.\n"
-        "Do not answer the subquestions.\n"
+        "Decompose the question into 2 to 6 simpler subquestions.\n"
+        "Return ONLY the subquestions as a list, one per line.\n"
+        "Use either:\n"
+        "- <subquestion>\n"
+        "or\n"
+        "\"<subquestion>\"\n"
+        "Do NOT answer them.\n"
     )
 
     _L2M_SOLVING_INSTRUCTIONS = (
-        "Answer the question.\n"
-        "If the question can be solved using previously answered subquestions, use them.\n"
-        "Finish with a final line: The answer is <...>.\n"
+        "You will answer the next question using the previous Q/A context.\n"
+        "Be concise and medically accurate.\n"
     )
 
     def _least_to_most_decompose(self, question: str) -> Tuple[List[str], str]:
@@ -621,34 +621,40 @@ class CompetitionKit:
         # However, we preserve the paper’s REQUIRED decomposition *format* exactly.
         # :contentReference[oaicite:5]{index=5}
 
-        prompt = (
-            self._L2M_DECOMPOSITION_INSTRUCTIONS
-            + "\nQ: " + question + "\nA:"
-        )
-
-        response, trace = self.model.inference(prompt)
-
-        # Parse: extract quoted subquestions after "we need to know:"
-        # Expected: ... we need to know: "q1", "q2", "q3".
-        subqs = []
-        m = re.search(r"we need to know:\s*(.*)$", response, flags=re.IGNORECASE | re.DOTALL)
-        if m:
-            tail = m.group(1)
-            subqs = re.findall(r"\"([^\"]+)\"", tail)
-
-        # Fallback: if the model did not follow quoting, try splitting by commas after colon
-        if not subqs and m:
-            tail = m.group(1).strip()
-            parts = [p.strip(" .\n\t\"") for p in tail.split(",") if p.strip()]
-            # keep only non-empty
-            subqs = [p for p in parts if p]
-
-        # Hard safety: cap number of subquestions to avoid runaway prompts
+        prompt = f"{self._L2M_DECOMP_INSTR}\nQUESTION:\n{question}\nSUBQUESTIONS:\n"
+        resp, trace = self.model.inference(prompt)
+    
+        lines = [l.strip() for l in resp.splitlines() if l.strip()]
+    
+        subqs: List[str] = []
+    
+        # 1) bullet style: "- ..."
+        for l in lines:
+            if l.startswith("-"):
+                sq = l.lstrip("-").strip()
+                if sq:
+                    subqs.append(sq)
+    
+        # 2) quoted style: "<...>"
+        if not subqs:
+            subqs = re.findall(r"\"([^\"]+)\"", resp)
+    
+        # 3) fallback: if model returned a single sentence with commas
+        if not subqs:
+            # remove leading "To answer..." boilerplate if present
+            cleaned = re.sub(r"(?is).*we need to know:\s*", "", resp).strip()
+            parts = [p.strip(" \n\t-•\".()") for p in cleaned.split(",") if p.strip()]
+            subqs = [p for p in parts if len(p) > 5]
+    
+        # safety caps
         subqs = subqs[:8]
-
-        trace_text = f"[L2M:DECOMPOSE]\nPROMPT:\n{prompt}\n\nRESPONSE:\n{response}\n"
+    
+        trace_text = f"[L2M:DECOMPOSE]\nPROMPT:\n{prompt}\n\nRESPONSE:\n{resp}\n"
         return subqs, trace_text
 
+
+
+    
     def _least_to_most_solve(self, original_question: str, subquestions: List[str]) -> Tuple[str, str]:
         """
         Stage 2 (paper): sequential solving.
@@ -656,36 +662,29 @@ class CompetitionKit:
         and iterate. The original question is appended as the final subproblem. :contentReference[oaicite:6]{index=6}
         Returns: (final_response_text, trace_text)
         """
-        # Prepare the ordered list of questions to solve:
-        # paper: solve subquestions, then solve original question last. :contentReference[oaicite:7]{index=7}
+        # Solve subquestions, then original question
         queue = list(subquestions) + [original_question]
-
-        # Start prompt with constant solving instructions (the “examples” portion).
-        # In the paper, this portion contains exemplars; here we keep the instruction scaffold
-        # but the sequential Q/A accumulation is identical.
-        prompt_prefix = self._L2M_SOLVING_INSTRUCTIONS + "\n"
-
-        history = ""  # grows as: Q: ... \nA: ... \n
-        full_trace = f"[L2M:SOLVE]\nPREFIX:\n{prompt_prefix}\n"
-
-        final_response = ""
-
-        for idx, q in enumerate(queue):
-            prompt = prompt_prefix + history + f"Q: {q}\nA:"
-            resp, trace = self.model.inference(prompt)
-
-            # Append this Q/A to history (paper-style sequential conditioning)
-            history += f"Q: {q}\nA: {resp.strip()}\n"
-
-            full_trace += (
-                f"\n--- STEP {idx+1}/{len(queue)} ---\n"
-                f"PROMPT:\n{prompt}\n\nRESPONSE:\n{resp}\n"
+    
+        history = ""
+        full_trace = "[L2M:SOLVE]\n"
+    
+        last_answer = ""
+    
+        for i, q in enumerate(queue, start=1):
+            prompt = (
+                f"{self._L2M_SOLVE_INSTR}\n"
+                f"{history}"
+                f"Q{i}: {q}\n"
+                f"A{i}:"
             )
-
-            final_response = resp.strip()
-
-        return final_response, full_trace
-
+            resp, trace = self.model.inference(prompt)
+            ans = resp.strip()
+    
+            history += f"Q{i}: {q}\nA{i}: {ans}\n\n"
+            full_trace += f"\n--- STEP {i}/{len(queue)} ---\nPROMPT:\n{prompt}\n\nRESPONSE:\n{resp}\n"
+            last_answer = ans
+    
+        return last_answer, full_trace
 
 
 
@@ -714,44 +713,46 @@ class CompetitionKit:
         # Least-to-Most prompting (two-stage) branch
         # ============================================================
         if getattr(self, "prompting_strategy", "cot_safe") == "least_to_most":
-            subqs, trace_decomp = self._least_to_most_decompose(question)
-            final_resp, trace_solve = self._least_to_most_solve(question, subqs)
+            subqs, trace_decomp = self._l2m_decompose(question)
+            final_resp, trace_solve = self._l2m_solve_sequentially(question, subqs)
     
             reasoning_trace = trace_decomp + "\n" + trace_solve
-    
-            if question_type == "multi_choice":
-                choice = self._extract_multiple_choice_answer(final_resp)
-                prediction["choice"] = choice if choice else ""
-                prediction["open_ended_answer"] = final_resp
-                return prediction, reasoning_trace
     
             if question_type == "open_ended":
                 prediction["choice"] = "NOTAVALUE"
                 prediction["open_ended_answer"] = final_resp
                 return prediction, reasoning_trace
     
+            if question_type == "multi_choice":
+                # force proper A–E via mapping step
+                choice, trace_map = self._l2m_map_to_choice(question, final_resp)
+                prediction["choice"] = choice if choice else ""
+                prediction["open_ended_answer"] = final_resp
+                return prediction, reasoning_trace + "\n" + trace_map
+    
             if question_type == "open_ended_multi_choice":
                 prediction["open_ended_answer"] = final_resp
     
-                # Keep your meta-question selection step
+                # use existing meta_question if provided (preferred)
                 if "meta_question" in example:
                     meta_prompt = (
                         f"{example['meta_question']}\n"
-                        "You are a medical expert evaluator.\n\n"
-                        "STRICT OUTPUT:\n"
-                        "Return exactly one letter A, B, C, D, or E.\n"
+                        "You are a medical expert evaluator.\n"
+                        "STRICT OUTPUT: Return exactly one letter A, B, C, D, or E.\n"
                         "No explanation.\n\n"
                         "Agent's answer:\n"
                         f"{final_resp}\n\n"
                         "FINAL ANSWER (one letter only):"
                     )
-                    meta_response, meta_reasoning = self.model.inference(meta_prompt)
-                    reasoning_trace += "\n" + json.dumps({"stage": "l2m_meta", "trace": meta_reasoning})
-                    choice = self._extract_multiple_choice_answer(meta_response)
+                    meta_resp, meta_trace = self.model.inference(meta_prompt)
+                    choice = self._extract_multiple_choice_answer(meta_resp)
                     prediction["choice"] = choice if choice else ""
+                    reasoning_trace += "\n[L2M:META]\n" + str(meta_trace)
                 else:
-                    choice = self._extract_multiple_choice_answer(final_resp)
+                    # fallback: map using options inside the question text
+                    choice, trace_map = self._l2m_map_to_choice(question, final_resp)
                     prediction["choice"] = choice if choice else ""
+                    reasoning_trace += "\n" + trace_map
     
                 return prediction, reasoning_trace
     
