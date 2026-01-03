@@ -108,7 +108,7 @@ class ChatGPTModel(BaseModel):
         # Create complete conversation history
         complete_messages = messages + [{"role": "assistant", "content": response}]
 
-                return response, complete_messages
+        return response, complete_messages
 
 # -----------------------------------------------------------------------------------------
 # Qwen
