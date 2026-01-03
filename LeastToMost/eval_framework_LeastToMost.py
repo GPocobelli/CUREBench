@@ -773,7 +773,7 @@ class CompetitionKit:
     
         #     if question_type == "open_ended_multi_choice":
         #         prediction["open_ended_answer"] = final_resp
-            if getattr(self, "prompting_strategy", "cot_safe") == "least_to_most":
+        if getattr(self, "prompting_strategy", "cot_safe") == "least_to_most":
             # L2M NUR für open_ended sinnvoll (bei kleinen lokalen Modellen)
             if question_type in ("multi_choice", "open_ended_multi_choice"):
                 # fall back auf deinen bestehenden CoT-safe Pfad:
