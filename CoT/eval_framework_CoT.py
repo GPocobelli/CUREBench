@@ -141,85 +141,85 @@ class ChatGPTModel(BaseModel):
     # -----------------------------------------------------------------------------------------
     # Llama
 
-    class LocalModel(BaseModel):
-        """Local HuggingFace model wrapper"""
-    
-        def load(self, **kwargs):
-            """Load local HuggingFace model.
-    
-            Notes:
-            - Tries to use 8-bit quantization only when CUDA is available and bitsandbytes is installed.
-            - Falls back to non-quantized loading otherwise (important for CPU-only environments / Kaggle CPU).
-            """
-            try:
-                from transformers import AutoTokenizer, AutoModelForCausalLM
-                import torch
-    
-                # Pull quantization flags from kwargs (so config can control it)
-                use_4bit = bool(kwargs.pop("use_4bit", False))
-                use_8bit = bool(kwargs.pop("use_8bit", False))
-    
-                # Safety: don't allow both at once
-                if use_4bit and use_8bit:
-                    raise ValueError("Config error: use_4bit and use_8bit cannot both be True.")
-    
-                # Tokenizer (local path)
-                self.tokenizer = AutoTokenizer.from_pretrained(
-                    self.model_name,
-                    local_files_only=True
-                )
-    
-                model_kwargs = dict(
-                    device_map="auto",
-                    torch_dtype=torch.bfloat16,
-                )
-                model_kwargs.update(kwargs)
-    
-                # Quantization config (only if CUDA + bitsandbytes available)
-                quantized = False
-                if (use_4bit or use_8bit) and torch.cuda.is_available():
-                    try:
-                        from transformers import BitsAndBytesConfig
-                        import bitsandbytes  # noqa: F401
-    
-                        if use_4bit:
-                            model_kwargs["quantization_config"] = BitsAndBytesConfig(
-                                load_in_4bit=True,
-                                bnb_4bit_quant_type="nf4",
-                                bnb_4bit_use_double_quant=True,
-                                bnb_4bit_compute_dtype=torch.bfloat16,
-                            )
-                            quantized = True
-    
-                        elif use_8bit:
-                            model_kwargs["quantization_config"] = BitsAndBytesConfig(
-                                load_in_8bit=True
-                            )
-                            quantized = True
-    
-                    except Exception as e:
-                        # If bnb isn't available, fall back to non-quantized load
-                        logger.warning(f"bitsandbytes quantization requested but unavailable: {e}. Loading without quantization.")
-                        quantized = False
-    
-                elif (use_4bit or use_8bit) and not torch.cuda.is_available():
-                    logger.warning("Quantization requested (4bit/8bit) but CUDA is not available. Loading without quantization.")
-    
-                # Model (local path)
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.model_name,
-                    local_files_only=True,
-                    **model_kwargs
-                )
-    
-                logger.info(
-                    f"Loaded local model: {self.model_name} "
-                    f"(4bit={use_4bit and quantized}, 8bit={use_8bit and quantized})"
-                )
-    
-            except ImportError as e:
-                logger.error(f"Failed to import local model dependencies: {e}")
-                raise
+class LocalModel(BaseModel):
+    """Local HuggingFace model wrapper"""
+
+    def load(self, **kwargs):
+        """Load local HuggingFace model.
+
+        Notes:
+        - Tries to use 8-bit quantization only when CUDA is available and bitsandbytes is installed.
+        - Falls back to non-quantized loading otherwise (important for CPU-only environments / Kaggle CPU).
+        """
+        try:
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+            import torch
+
+            # Pull quantization flags from kwargs (so config can control it)
+            use_4bit = bool(kwargs.pop("use_4bit", False))
+            use_8bit = bool(kwargs.pop("use_8bit", False))
+
+            # Safety: don't allow both at once
+            if use_4bit and use_8bit:
+                raise ValueError("Config error: use_4bit and use_8bit cannot both be True.")
+
+            # Tokenizer (local path)
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name,
+                local_files_only=True
+            )
+
+            model_kwargs = dict(
+                device_map="auto",
+                torch_dtype=torch.bfloat16,
+            )
+            model_kwargs.update(kwargs)
+
+            # Quantization config (only if CUDA + bitsandbytes available)
+            quantized = False
+            if (use_4bit or use_8bit) and torch.cuda.is_available():
+                try:
+                    from transformers import BitsAndBytesConfig
+                    import bitsandbytes  # noqa: F401
+
+                    if use_4bit:
+                        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                            load_in_4bit=True,
+                            bnb_4bit_quant_type="nf4",
+                            bnb_4bit_use_double_quant=True,
+                            bnb_4bit_compute_dtype=torch.bfloat16,
+                        )
+                        quantized = True
+
+                    elif use_8bit:
+                        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                            load_in_8bit=True
+                        )
+                        quantized = True
+
+                except Exception as e:
+                    # If bnb isn't available, fall back to non-quantized load
+                    logger.warning(f"bitsandbytes quantization requested but unavailable: {e}. Loading without quantization.")
+                    quantized = False
+
+            elif (use_4bit or use_8bit) and not torch.cuda.is_available():
+                logger.warning("Quantization requested (4bit/8bit) but CUDA is not available. Loading without quantization.")
+
+            # Model (local path)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                local_files_only=True,
+                **model_kwargs
+            )
+
+            logger.info(
+                f"Loaded local model: {self.model_name} "
+                f"(4bit={use_4bit and quantized}, 8bit={use_8bit and quantized})"
+            )
+
+        except ImportError as e:
+            logger.error(f"Failed to import local model dependencies: {e}")
+            raise
 
 
 
