@@ -125,124 +125,102 @@ class ChatGPTModel(BaseModel):
 # -----------------------------------------------------------------------------------------
 # Qwen
 
+
 class LocalModel(BaseModel):
     """Local HuggingFace model wrapper"""
 
     def load(self, **kwargs):
-        """Load local HuggingFace model"""
+        """Load local HuggingFace model.
+
+        Notes:
+        - Tries to use 8-bit quantization only when CUDA is available and bitsandbytes is installed.
+        - Falls back to non-quantized loading otherwise (important for CPU-only environments / Kaggle CPU).
+        """
         try:
-            from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+            from transformers import AutoTokenizer, AutoModelForCausalLM
             import torch
 
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                torch_dtype=torch.bfloat16,
+
+            model_kwargs = dict(
                 device_map="auto",
-                quantization_config=BitsAndBytesConfig(load_in_8bit=True),  # ✅ FIX: add missing comma + keyword style
-                **kwargs
+                torch_dtype=torch.bfloat16,
             )
-            logger.info(f"Loaded local model: {self.model_name}")
+            model_kwargs.update(kwargs)
+
+            # Optional 8-bit quantization (CUDA + bitsandbytes)
+            use_8bit = False
+            try:
+                if torch.cuda.is_available():
+                    from transformers import BitsAndBytesConfig  # noqa: F401
+                    import bitsandbytes  # noqa: F401
+                    use_8bit = True
+            except Exception:
+                use_8bit = False
+
+            if use_8bit:
+                from transformers import BitsAndBytesConfig
+                model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+
+            self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
+            logger.info(f"Loaded local model: {self.model_name} (8bit={use_8bit})")
+
         except ImportError as e:
             logger.error(f"Failed to import local model dependencies: {e}")
             raise
 
-
-
-
-    # -----------------------------------------------------------------------------------------
-    # Llama
-
-    # class LocalModel(BaseModel):
-    # """Local HuggingFace model wrapper"""
-
-    # def load(self, **kwargs):
-    #     try:
-    #         from transformers import AutoTokenizer, AutoModelForCausalLM
-    #         import torch
-
-    #         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-
-    #         use_4bit = bool(kwargs.pop("use_4bit", False))
-    #         use_8bit = bool(kwargs.pop("use_8bit", False))
-
-    #         model_kwargs = {
-    #             "device_map": "auto",
-    #             "torch_dtype": torch.bfloat16,
-    #             **kwargs,
-    #         }
-
-    #         # Quantization (requires bitsandbytes)
-    #         if use_4bit or use_8bit:
-    #             from transformers import BitsAndBytesConfig
-
-    #             if use_4bit:
-    #                 model_kwargs["quantization_config"] = BitsAndBytesConfig(
-    #                     load_in_4bit=True,
-    #                     bnb_4bit_compute_dtype=torch.bfloat16,
-    #                     bnb_4bit_use_double_quant=True,
-    #                     bnb_4bit_quant_type="nf4",
-    #                 )
-    #             elif use_8bit:
-    #                 model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
-
-    #         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
-    #         logger.info(f"Loaded local model: {self.model_name}")
-
-    #     except ImportError as e:
-    #         logger.error(f"Failed to import local model dependencies: {e}")
-    #         raise
-
-
-
-
-
-
-
-
-
-
-    
-    def inference(self, prompt: str, max_tokens: int = 1024,
-                  temperature: float = 0.0, top_p: float = 1.0, top_k: Optional[int] = None):
-        import torch
-    
+    def inference(
+        self,
+        prompt: str,
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        top_k: Optional[int] = None,
+    ):
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": prompt},
         ]
-    
-        input_ids = self.tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            return_tensors="pt",
-            enable_thinking=False
-        ).to(self.model.device)
-    
-        attention_mask = torch.ones_like(input_ids, dtype=torch.long)
-    
+
+        # Some tokenizers don't support enable_thinking; fall back gracefully.
+        try:
+            input_ids = self.tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                return_tensors="pt",
+                enable_thinking=False,
+            ).to(self.model.device)
+        except TypeError:
+            input_ids = self.tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            ).to(self.model.device)
+
         gen_kwargs = dict(
             max_new_tokens=max_tokens,
-            do_sample=(temperature and temperature > 0.0),
-            temperature=float(temperature),
-            top_p=float(top_p),
-            pad_token_id=self.tokenizer.pad_token_id,
+            pad_token_id=self.tokenizer.eos_token_id,
         )
-        if top_k is not None:
-            gen_kwargs["top_k"] = int(top_k)
-    
-        outputs = self.model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            **gen_kwargs
-        )
-    
-        response_tokens = outputs[0][input_ids.shape[-1]:]
-        response_text = self.tokenizer.decode(response_tokens, skip_special_tokens=True)
-    
+
+        if temperature and temperature > 0:
+            gen_kwargs.update(
+                dict(
+                    do_sample=True,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
+            )
+            if top_k is not None:
+                gen_kwargs["top_k"] = int(top_k)
+        else:
+            gen_kwargs.update(dict(do_sample=False))
+
+        outputs = self.model.generate(input_ids, **gen_kwargs)
+        response = outputs[0][input_ids.shape[-1] :]
+        response_text = self.tokenizer.decode(response, skip_special_tokens=True)
+
         complete_messages = messages + [{"role": "assistant", "content": response_text}]
         return response_text, complete_messages
-
 
 
 class CustomModel(BaseModel):
@@ -358,7 +336,6 @@ class GPTOSS20BModel(BaseModel):
                 builtin_tools=builtin_tools,
                 tools=tools,
             ).to(self.model.device)
-
         except Exception as e:
             logging.warning(
                 f"[WARN] Custom chat_template in {self.model_name} failed "
@@ -366,7 +343,7 @@ class GPTOSS20BModel(BaseModel):
             )
             base_tok = AutoTokenizer.from_pretrained("openai/gpt-oss-20b")
             self.tokenizer.chat_template = base_tok.chat_template
-             input_ids = self.tokenizer.apply_chat_template(
+            input_ids = self.tokenizer.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
                 return_tensors="pt",
@@ -375,7 +352,7 @@ class GPTOSS20BModel(BaseModel):
                     or "You are ChatGPT, a large language model trained by OpenAI.",
                 builtin_tools=builtin_tools,
                 tools=tools,
-             ).to(self.model.device)
+            ).to(self.model.device)
 
         outputs = self.model.generate(
             input_ids,
@@ -420,7 +397,7 @@ class CompetitionKit:
 
         self.self_consistency = self.config.get("self_consistency", {})
         self.sc_enabled = bool(self.self_consistency.get("enabled", False))
-        self.sc_num_paths = int(self.self_consistency.get("num_paths", 5))
+        self.sc_num_paths = int(self.self_consistency.get("num_paths", 10))
         self.sc_temperature = float(self.self_consistency.get("temperature", 0.7))
         self.sc_top_k = self.self_consistency.get("top_k", 40)  # can be None
         self.sc_top_p = float(self.self_consistency.get("top_p", 1.0))
@@ -636,8 +613,10 @@ class CompetitionKit:
                 "The following is a multi_choice question.\n"
                 "You are a medical expert that answers multiple choice questions about medical knowledge.\n\n"
                 "INSTRUCTIONS:\n"
-                "- Before answering, let's think step by step.\n"
-                "- Return exactly one letter: A, B, C, D, or E.\n\n"
+                "- Before answering, let's think step by step and break it down into sub-problems.\n"
+                "- Then provide the final answer in exactly this format:\n"
+                "  The answer is X.\n"
+                "  where X is one of A, B, C, D, E.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
             )
@@ -668,7 +647,7 @@ class CompetitionKit:
                         for r, c, t in zip(responses, choices, traces)
                     ],
                 }
-                return prediction, json.dumps(reasoning_trace)
+                return prediction, reasoning_trace
     
             # --- fallback: single decode (your current behavior) ---
             response, reasoning_trace = self.model.inference(prompt, temperature=0.0)
@@ -783,7 +762,7 @@ class CompetitionKit:
                             for r, c, t, mt in zip(responses, choices, traces, meta_traces)
                         ],
                     }
-                    return prediction, json.dumps(reasoning_trace)
+                    return prediction, reasoning_trace
     
                 # no meta_question: fall back to extracting choice directly from responses
                 choices = [self._extract_multiple_choice_answer(r) for r in responses]
@@ -799,7 +778,7 @@ class CompetitionKit:
                         for r, c, t in zip(responses, choices, traces)
                     ],
                 }
-                return prediction, json.dumps(reasoning_trace)
+                return prediction, reasoning_trace
     
             # --- fallback single decode (your current behavior) ---
             response, reasoning_trace = self.model.inference(prompt, temperature=0.0)
@@ -936,7 +915,8 @@ class CompetitionKit:
             examples = dataset_examples if dataset_examples else []
 
             for i, (prediction, example) in enumerate(zip(result.predictions, examples)):
-                reasoning_trace = json.dumps(result.reasoning_traces[i])
+                rt = result.reasoning_traces[i]
+                reasoning_trace = rt if isinstance(rt, str) else json.dumps(rt)
 
                 prediction_text = prediction.get("open_ended_answer", "") or ""
                 if not prediction_text or prediction_text.strip() == "":
