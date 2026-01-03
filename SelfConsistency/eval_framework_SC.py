@@ -140,7 +140,7 @@ class LocalModel(BaseModel):
             from transformers import AutoTokenizer, AutoModelForCausalLM
             import torch
 
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, local_files_only=True)
 
             model_kwargs = dict(
                 device_map="auto",
