@@ -211,26 +211,17 @@ class LocalModel(BaseModel):
         ]
     
         input_ids = self.tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors='pt', enable_thinking=False
+    messages, add_generation_prompt=True, return_tensors='pt', enable_thinking=False
         ).to(self.model.device)
-    
-        gen_kwargs = dict(
-            max_new_tokens=max_tokens,
-            pad_token_id=self.tokenizer.eos_token_id,
+
+        # Wenn du batch_size=1 und ohne Padding arbeitest, ist attention_mask = 1 überall korrekt.
+        attention_mask = torch.ones_like(input_ids, dtype=torch.long)
+        
+        outputs = self.model.generate(
+            input_ids,
+            attention_mask=attention_mask,
+            **gen_kwargs
         )
-    
-        if temperature and temperature > 0:
-            gen_kwargs.update(dict(
-                do_sample=True,
-                temperature=temperature,
-                top_p=top_p,
-            ))
-            if top_k is not None:
-                gen_kwargs["top_k"] = int(top_k)
-        else:
-            gen_kwargs.update(dict(do_sample=False))
-    
-        outputs = self.model.generate(input_ids, **gen_kwargs)
         response = outputs[0][input_ids.shape[-1]:]
         response_text = self.tokenizer.decode(response, skip_special_tokens=True)
     
