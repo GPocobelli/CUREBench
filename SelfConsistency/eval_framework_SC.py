@@ -508,7 +508,7 @@ class CompetitionKit:
                         is_correct = prediction["choice"] == expected_answer
                     else:
                         is_correct = False
-                    accuracy_total_count += 1–
+                    accuracy_total_count += 1
                     if is_correct:
                         accuracy_correct_count += 1
                 elif question_type == "open_ended":
