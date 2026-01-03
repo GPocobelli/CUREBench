@@ -714,8 +714,8 @@ class CompetitionKit:
         # Least-to-Most prompting (two-stage) branch
         # ============================================================
         if getattr(self, "prompting_strategy", "cot_safe") == "least_to_most":
-            subqs, trace_decomp = self._l2m_decompose(question)
-            final_resp, trace_solve = self._l2m_solve_sequentially(question, subqs)
+            subqs, trace_decomp = self._least_to_most_decompose(question)
+            final_resp, trace_solve = self._least_to_most_solve(question, subqs)
     
             reasoning_trace = trace_decomp + "\n" + trace_solve
     
