@@ -621,7 +621,7 @@ class CompetitionKit:
         # However, we preserve the paper’s REQUIRED decomposition *format* exactly.
         # :contentReference[oaicite:5]{index=5}
 
-        prompt = f"{self._L2M_DECOMP_INSTR}\nQUESTION:\n{question}\nSUBQUESTIONS:\n"
+        prompt = f"{self._least_to_most_decompose}\nQUESTION:\n{question}\nSUBQUESTIONS:\n"
         resp, trace = self.model.inference(prompt)
     
         lines = [l.strip() for l in resp.splitlines() if l.strip()]
@@ -672,7 +672,7 @@ class CompetitionKit:
     
         for i, q in enumerate(queue, start=1):
             prompt = (
-                f"{self._L2M_SOLVE_INSTR}\n"
+                f"{self._L2M_SOLVING_INSTRUCTIONS}\n"
                 f"{history}"
                 f"Q{i}: {q}\n"
                 f"A{i}:"
@@ -687,6 +687,23 @@ class CompetitionKit:
         return last_answer, full_trace
 
 
+
+
+
+    def _l2m_map_to_choice(self, question_block: str, agent_answer: str) -> Tuple[str, str]:
+        prompt = (
+            "You are a medical expert evaluator.\n"
+            "Choose the single best option label (A, B, C, D, or E) that matches the agent answer.\n"
+            "STRICT OUTPUT: return exactly one letter A, B, C, D, or E.\n\n"
+            "QUESTION (with options):\n"
+            f"{question_block}\n\n"
+            "AGENT ANSWER:\n"
+            f"{agent_answer}\n\n"
+            "FINAL ANSWER (one letter only):"
+        )
+        resp, trace = self.model.inference(prompt)
+        choice = self._extract_multiple_choice_answer(resp)
+        return choice, f"[L2M:MAP]\nPROMPT:\n{prompt}\n\nRESPONSE:\n{resp}\n"
 
 # ---------------------------------------------------------------------------------------------
 
@@ -713,8 +730,8 @@ class CompetitionKit:
         # Least-to-Most prompting (two-stage) branch
         # ============================================================
         if getattr(self, "prompting_strategy", "cot_safe") == "least_to_most":
-            subqs, trace_decomp = self._l2m_decompose(question)
-            final_resp, trace_solve = self._l2m_solve_sequentially(question, subqs)
+            subqs, trace_decomp = self._least_to_most_decompose(question)
+            final_resp, trace_solve = self._least_to_most_solve(question, subqs)
     
             reasoning_trace = trace_decomp + "\n" + trace_solve
     
