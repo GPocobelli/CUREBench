@@ -1,9 +1,9 @@
 {
   "metadata": {
     "model_name": "/kaggle/input/llama-3.3/transformers/70b-instruct",
-    "model_type": "OpenWeightedModel",
+    "model_type": "local",
     "track": "internal_reasoning",
-    "base_model_type": "OpenWeighted",
+    "base_model_type": "local",
     "base_model_name": "Llama-3.3-70B-Instruct",
     "dataset": "cure_bench_phase_1",
     "additional_info": ""
