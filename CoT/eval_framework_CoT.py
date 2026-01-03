@@ -113,27 +113,27 @@ class ChatGPTModel(BaseModel):
 # -----------------------------------------------------------------------------------------
 # Qwen
 
-class LocalModel(BaseModel):
-    """Local HuggingFace model wrapper"""
+# class LocalModel(BaseModel):
+#     """Local HuggingFace model wrapper"""
 
-    def load(self, **kwargs):
-        """Load local HuggingFace model"""
-        try:
-            from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-            import torch
+#     def load(self, **kwargs):
+#         """Load local HuggingFace model"""
+#         try:
+#             from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+#             import torch
 
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                torch_dtype=torch.bfloat16,
-                device_map="auto",
-                quantization_config=BitsAndBytesConfig(load_in_8bit=True),  # ✅ FIX: add missing comma + keyword style
-                **kwargs
-            )
-            logger.info(f"Loaded local model: {self.model_name}")
-        except ImportError as e:
-            logger.error(f"Failed to import local model dependencies: {e}")
-            raise
+#             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+#             self.model = AutoModelForCausalLM.from_pretrained(
+#                 self.model_name,
+#                 torch_dtype=torch.bfloat16,
+#                 device_map="auto",
+#                 quantization_config=BitsAndBytesConfig(load_in_8bit=True),  # ✅ FIX: add missing comma + keyword style
+#                 **kwargs
+#             )
+#             logger.info(f"Loaded local model: {self.model_name}")
+#         except ImportError as e:
+#             logger.error(f"Failed to import local model dependencies: {e}")
+#             raise
 
 
 
@@ -141,45 +141,45 @@ class LocalModel(BaseModel):
     # -----------------------------------------------------------------------------------------
     # Llama
 
-    # class LocalModel(BaseModel):
-    # """Local HuggingFace model wrapper"""
+    class LocalModel(BaseModel):
+    """Local HuggingFace model wrapper"""
 
-    # def load(self, **kwargs):
-    #     try:
-    #         from transformers import AutoTokenizer, AutoModelForCausalLM
-    #         import torch
+    def load(self, **kwargs):
+        try:
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+            import torch
 
-    #         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
 
-    #         use_4bit = bool(kwargs.pop("use_4bit", False))
-    #         use_8bit = bool(kwargs.pop("use_8bit", False))
+            use_4bit = bool(kwargs.pop("use_4bit", False))
+            use_8bit = bool(kwargs.pop("use_8bit", False))
 
-    #         model_kwargs = {
-    #             "device_map": "auto",
-    #             "torch_dtype": torch.bfloat16,
-    #             **kwargs,
-    #         }
+            model_kwargs = {
+                "device_map": "auto",
+                "torch_dtype": torch.bfloat16,
+                **kwargs,
+            }
 
-    #         # Quantization (requires bitsandbytes)
-    #         if use_4bit or use_8bit:
-    #             from transformers import BitsAndBytesConfig
+            # Quantization (requires bitsandbytes)
+            if use_4bit or use_8bit:
+                from transformers import BitsAndBytesConfig
 
-    #             if use_4bit:
-    #                 model_kwargs["quantization_config"] = BitsAndBytesConfig(
-    #                     load_in_4bit=True,
-    #                     bnb_4bit_compute_dtype=torch.bfloat16,
-    #                     bnb_4bit_use_double_quant=True,
-    #                     bnb_4bit_quant_type="nf4",
-    #                 )
-    #             elif use_8bit:
-    #                 model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+                if use_4bit:
+                    model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.bfloat16,
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_quant_type="nf4",
+                    )
+                elif use_8bit:
+                    model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
 
-    #         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
-    #         logger.info(f"Loaded local model: {self.model_name}")
+            self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
+            logger.info(f"Loaded local model: {self.model_name}")
 
-    #     except ImportError as e:
-    #         logger.error(f"Failed to import local model dependencies: {e}")
-    #         raise
+        except ImportError as e:
+            logger.error(f"Failed to import local model dependencies: {e}")
+            raise
 
 
 
