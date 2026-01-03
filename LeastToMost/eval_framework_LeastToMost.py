@@ -773,20 +773,20 @@ class CompetitionKit:
     
         #     if question_type == "open_ended_multi_choice":
         #         prediction["open_ended_answer"] = final_resp
+        # ============================================================
+        # Least-to-Most prompting (nur für open_ended!)
+        # ============================================================
         if getattr(self, "prompting_strategy", "cot_safe") == "least_to_most":
-            # L2M NUR für open_ended sinnvoll (bei kleinen lokalen Modellen)
-            if question_type in ("multi_choice", "open_ended_multi_choice"):
-                # fall back auf deinen bestehenden CoT-safe Pfad:
-                # (einfach so tun, als wäre prompting_strategy != least_to_most)
-                pass
-            else:
+            if question_type == "open_ended":
                 subqs, trace_decomp = self._least_to_most_decompose(question)
                 final_resp, trace_solve = self._least_to_most_solve(question, subqs)
-        
+
                 reasoning_trace = trace_decomp + "\n" + trace_solve
                 prediction["choice"] = "NOTAVALUE"
                 prediction["open_ended_answer"] = final_resp
                 return prediction, reasoning_trace
+
+            #raise ValueError(f"Unsupported question type: {question_type}")
                 # use existing meta_question if provided (preferred)
                 if "meta_question" in example:
                     meta_prompt = (
