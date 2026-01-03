@@ -190,6 +190,7 @@ class LocalModel(BaseModel):
                 return_tensors="pt",
                 enable_thinking=False,
             ).to(self.model.device)
+        
         except TypeError:
             input_ids = self.tokenizer.apply_chat_template(
                 messages,
@@ -197,9 +198,17 @@ class LocalModel(BaseModel):
                 return_tensors="pt",
             ).to(self.model.device)
 
+        if self.tokenizer.pad_token_id is None:
+        # safest fallback: use eos as pad token (common for decoder-only LMs)
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+    
+        pad_id = self.tokenizer.pad_token_id
+        attention_mask = (input_ids != pad_id).long()
+
+        
         gen_kwargs = dict(
-            max_new_tokens=max_tokens,
-            pad_token_id=self.tokenizer.eos_token_id,
+                max_new_tokens=max_tokens,
+                pad_token_id=pad_id, 
         )
 
         if temperature and temperature > 0:
@@ -215,7 +224,7 @@ class LocalModel(BaseModel):
         else:
             gen_kwargs.update(dict(do_sample=False))
 
-        outputs = self.model.generate(input_ids, **gen_kwargs)
+        outputs = self.model.generate(input_ids, attention_mask=attention_mask, **gen_kwargs)
         response = outputs[0][input_ids.shape[-1] :]
         response_text = self.tokenizer.decode(response, skip_special_tokens=True)
 
@@ -499,7 +508,7 @@ class CompetitionKit:
                         is_correct = prediction["choice"] == expected_answer
                     else:
                         is_correct = False
-                    accuracy_total_count += 1
+                    accuracy_total_count += 1–
                     if is_correct:
                         accuracy_correct_count += 1
                 elif question_type == "open_ended":
