@@ -1120,7 +1120,7 @@ class CompetitionKit:
 
         return metadata
 
-
+    @staticmethod
     def create_metadata_parser() -> argparse.ArgumentParser:
         """
         Create command line argument parser for metadata
@@ -1196,3 +1196,7 @@ def load_and_merge_config(args):
 
     add_config_to_args(config)
     return args
+
+
+
+create_metadata_parser = CompetitionKit.create_metadata_parser
