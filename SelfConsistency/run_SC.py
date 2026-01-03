@@ -14,7 +14,7 @@ Usage:
 """
 
 import os
-from eval_framework_SC import CompetitionKit, load_and_merge_config, create_metadata_parser
+from eval_framework_SC_fixed_v2 import CompetitionKit, load_and_merge_config, create_metadata_parser
 
 
 def main():
@@ -30,7 +30,7 @@ def main():
     output_file = getattr(args, 'output_file', "submission.csv") 
     dataset_name = getattr(args, 'dataset')
     model_name = getattr(args, 'model_path', None) or getattr(args, 'model_name', None)
-    model_class = getattr(args, 'model_class', 'auto')
+    model_type = getattr(args, 'model_type', None) or getattr(args, 'model_class', 'auto')
     
     """Run evaluation with metadata support"""
     print("\n" + "="*60)
@@ -48,7 +48,7 @@ def main():
     kit = CompetitionKit(config_path=config_path)
     
     print(f"Loading model: {model_name}")
-    kit.load_model(model_name, model_class)
+    kit.load_model(model_name, model_type)
     
     # Show available datasets
     print("Available datasets:")
