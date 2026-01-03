@@ -443,7 +443,7 @@ class CompetitionKit:
 
         self.self_consistency = self.config.get("self_consistency", {})
         self.sc_enabled = bool(self.self_consistency.get("enabled", False))
-        self.sc_num_paths = int(self.self_consistency.get("num_paths", 10))
+        self.sc_num_paths = int(self.self_consistency.get("num_paths", 5))
         self.sc_temperature = float(self.self_consistency.get("temperature", 0.7))
         self.sc_top_k = self.self_consistency.get("top_k", 40)  # can be None
         self.sc_top_p = float(self.self_consistency.get("top_p", 1.0))
