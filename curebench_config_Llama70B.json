@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "model_name": "/kaggle/input/llama-3.3/transformers/70b-instruct/1"
+    "model_name": "/kaggle/input/llama-3.3/transformers/70b-instruct/1",
     "model_type": "local",
     "track": "internal_reasoning",
     "base_model_type": "local",
