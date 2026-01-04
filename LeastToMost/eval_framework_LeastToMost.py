@@ -102,7 +102,7 @@ class ChatGPTModel(BaseModel):
         responses = self.model_client.chat.completions.create(
             model=self.model_name,
             messages=messages,
-            max_completion_tokens=8192,
+            max_completion_tokens=max_tokens,
         )
         response = responses.choices[0].message.content
 
@@ -752,66 +752,40 @@ class CompetitionKit:
         prediction = {"choice": "", "open_ended_answer": ""}
     
         # ============================================================
-        # Least-to-Most prompting (two-stage) branch
-        # ============================================================
-        # if getattr(self, "prompting_strategy", "cot_safe") == "least_to_most":
-        #     subqs, trace_decomp = self._least_to_most_decompose(question)
-        #     final_resp, trace_solve = self._least_to_most_solve(question, subqs)
-    
-        #     reasoning_trace = trace_decomp + "\n" + trace_solve
-    
-        #     if question_type == "open_ended":
-        #         prediction["choice"] = "NOTAVALUE"
-        #         prediction["open_ended_answer"] = final_resp
-        #         return prediction, reasoning_trace
-    
-        #     if question_type == "multi_choice":
-        #         choice, trace_mc = self._force_mc_letter(question, final_resp)
-        #         prediction["choice"] = choice if choice else ""
-        #         prediction["open_ended_answer"] = final_resp
-        #         return prediction, reasoning_trace + "\n" + trace_mc
-    
-        #     if question_type == "open_ended_multi_choice":
-        #         prediction["open_ended_answer"] = final_resp
-        # ============================================================
-        # Least-to-Most prompting (nur für open_ended!)
+        # Least-to-Most prompting (two-stage) for ALL question types
         # ============================================================
         if getattr(self, "prompting_strategy", "cot_safe") == "least_to_most":
-            if question_type == "open_ended":
-                subqs, trace_decomp = self._least_to_most_decompose(question)
-                final_resp, trace_solve = self._least_to_most_solve(question, subqs)
+            # Stage 1: decompose into sub-questions (may return [])
+            subqs, trace_decomp = self._least_to_most_decompose(question)
 
-                reasoning_trace = trace_decomp + "\n" + trace_solve
+            # Stage 2: solve sub-questions sequentially, then solve the original question
+            final_resp, trace_solve = self._least_to_most_solve(question, subqs)
+
+            reasoning_trace = trace_decomp + "\n" + trace_solve
+
+            if question_type == "open_ended":
                 prediction["choice"] = "NOTAVALUE"
                 prediction["open_ended_answer"] = final_resp
                 return prediction, reasoning_trace
 
-            #raise ValueError(f"Unsupported question type: {question_type}")
-                # use existing meta_question if provided (preferred)
-                if "meta_question" in example:
-                    meta_prompt = (
-                        f"{example['meta_question']}\n"
-                        "You are a medical expert evaluator.\n"
-                        "STRICT OUTPUT: Return exactly one letter A, B, C, D, or E.\n"
-                        "No explanation.\n\n"
-                        "Agent's answer:\n"
-                        f"{final_resp}\n\n"
-                        "FINAL ANSWER (one letter only):"
-                    )
-                    meta_resp, meta_trace = self.model.inference(meta_prompt)
-                    choice = self._extract_multiple_choice_answer(meta_resp)
-                    prediction["choice"] = choice if choice else ""
-                    reasoning_trace += "\n[L2M:META]\n" + str(meta_trace)
-                else:
-                    # fallback: map using options inside the question text
-                    choice, trace_map = self._l2m_map_to_choice(question, final_resp)
-                    prediction["choice"] = choice if choice else ""
-                    reasoning_trace += "\n" + trace_map
-    
-                return prediction, reasoning_trace
-    
-            #raise ValueError(f"Unsupported question type: {question_type}")
-    
+            if question_type == "multi_choice":
+                # Use the model to emit a single A–E letter based on the solved reasoning/answer
+                choice, trace_mc = self._force_mc_letter(question, final_resp)
+                prediction["choice"] = choice if choice else ""
+                prediction["open_ended_answer"] = final_resp
+                return prediction, reasoning_trace + "\n" + trace_mc
+
+            if question_type == "open_ended_multi_choice":
+                # Keep the free-form answer, then map to a single A–E choice using meta_question (preferred)
+                prediction["open_ended_answer"] = final_resp
+
+                question_with_options = example.get("meta_question") or question
+                choice, trace_map = self._l2m_map_to_choice(question_with_options, final_resp)
+                prediction["choice"] = choice if choice else ""
+                return prediction, reasoning_trace + "\n" + trace_map
+
+            raise ValueError(f"Unsupported question type: {question_type}")
+
         # ============================================================
         # Otherwise: your existing CoT-safe logic (unchanged)
         # ============================================================
