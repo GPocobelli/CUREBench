@@ -628,13 +628,19 @@ class CompetitionKit:
         for batch in dataloader:
             question_type = batch[0][0]
 
+            # batch layout after dataset_utils change:
+            # 0: question_type, 1: id, 2: question, 3: answer, 4: meta_question, 5: options
+            options = batch[5][0] if len(batch) > 5 else None
+
             if question_type == "multi_choice":
                 dataset_list.append({
                     "question_type": batch[0][0],
                     "id": batch[1][0],
                     "question": batch[2][0],
                     "answer": batch[3][0],
+                    "options": options,  # <-- NEW
                 })
+
             elif question_type == "open_ended_multi_choice":
                 dataset_list.append({
                     "question_type": batch[0][0],
@@ -642,7 +648,9 @@ class CompetitionKit:
                     "question": batch[2][0],
                     "answer": batch[3][0],
                     "meta_question": batch[4][0],
+                    "options": options,  # <-- NEW
                 })
+
             elif question_type == "open_ended":
                 dataset_list.append({
                     "question_type": batch[0][0],
@@ -692,6 +700,8 @@ class CompetitionKit:
         # ------------------------------------------------------------------------------------
         
         if question_type == "multi_choice":
+            options_block = self._format_options_block(example.get("options") or {})
+
             prompt = (
                 "The following is a multi_choice question with options.\n"
                 "You are a medical expert that answers multiple choice questions about medical knowledge.\n\n"
@@ -718,6 +728,7 @@ class CompetitionKit:
                 prediction["choice"] = final_choice if final_choice else ""
                 # store a representative string (optional): first response matching final_choice
                 rep = ""
+                
                 for r, c in zip(responses, choices):
                     if c == final_choice and r:
                         rep = r
@@ -778,7 +789,7 @@ class CompetitionKit:
         # ------------------------------------------------------------------------------------
         
         elif question_type == "open_ended_multi_choice":
-            options_block = self._format_options_block(example.get("options", {}))
+            options_block = self._format_options_block(example.get("options") or {})
             prompt = (
                 "The following is a open_ended_multi_choice question with options.\n"
                 "You are a medical expert that answers open-end questions about medical knowledge.\n\n"
