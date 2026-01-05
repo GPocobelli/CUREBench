@@ -96,39 +96,37 @@ class CureBenchDataset(Dataset):
     def __getitem__(self, idx):
         """
         Get a single example from the dataset.
-        
+
         Returns:
-            - For multiple choice: (question, options, answer) or (question, options, answer, drug_names)
-            - For open-ended: (question, answer, id)
+            Tuple fields (consistent across types):
+            (question_type, id_value, question, answer, meta_question, options_dict)
         """
         if idx >= len(self.data):
             raise IndexError(f"Index {idx} out of range for dataset of size {len(self.data)}")
-            
-        item = self.data[idx]
-        
-        # Extract basic fields
-        question_type = item['question_type']
-        question = item.get('question', '')
-        answer = item.get('correct_answer', item.get('answer', ''))
-        meta_question = ""
-        id_value = item['id']
 
-        if question_type == 'multi_choice':
-            options = item['options']
-            options_list = '\n'.join([f"{opt}: {options[opt]}" for opt in sorted(options.keys())])
-            question = f"{question}\n{options_list}"
+        item = self.data[idx]
+
+        question_type = item["question_type"]
+        question = item.get("question", "")
+        answer = item.get("correct_answer", item.get("answer", ""))
+        id_value = item["id"]
+
+        options = item.get("options", None)  # dict or None
+        meta_question = ""
+
+        if question_type == "multi_choice":
+            # Keep question raw; pass options separately (cleaner for prompt construction)
+            return question_type, id_value, question, answer, meta_question, options
+
+        elif question_type == "open_ended_multi_choice":
+            # Keep question raw; pass options separately.
+            # meta_question can remain, but is optional once options are available.
             meta_question = ""
-            return question_type, id_value, question, answer, meta_question
-        elif question_type == 'open_ended_multi_choice':
-            options = item['options']
-            options_list = '\n'.join([f"{opt}: {options[opt]}" for opt in sorted(options.keys())])
-            question = f"{question}"
-            meta_question = f"The following is a multiple choice question about medicine and the agent's open-ended answer to the question. Convert the agent's answer to the final answer format using the corresponding option label, e.g., 'A', 'B', 'C', 'D', 'E' or 'None'. \n\nQuestion: {question}\n{options_list}\n\n"
-            return question_type, id_value, question, answer, meta_question
-        elif question_type == 'open_ended':
-            question = f"The following is an open-ended question about medicine. Provide a comprehensive answer.\n\nQuestion: {question}\n\nAnswer:"
-            meta_question = ""
-            return question_type, id_value, question, answer, meta_question
+            return question_type, id_value, question, answer, meta_question, options
+
+        elif question_type == "open_ended":
+            return question_type, id_value, question, answer, meta_question, None
+
         else:
             raise ValueError(f"Unsupported question type: {question_type}")
 
