@@ -724,11 +724,14 @@ class CompetitionKit:
                 all_traces: List[Dict] = []
 
                 rank_prompt = (
-                    "The following is a multi_choice question.\n"
+                    "TASK: Rank the answer options for the following multiple-choice medical question.\n"
                     "You are a medical expert.\n\n"
-                    "STRICT OUTPUT:\n"
-                    "Return a COMPLETE ranking of all options A, B, C, D, E from best to worst.\n"
-                    "Format: A > B > C > D > E\n"
+                    "OUTPUT RULES (STRICT):\n"
+                    "1) Output EXACTLY one line.\n"
+                    "2) The line must contain EXACTLY the unique letters from the options\n"
+                    "3) Return the ranking of options by likelihood from best to worst.\n"
+                    "4) Use EXACTLY this separator: ' > ' (space, greater-than, space).\n"
+                    "Format: ranked_answer1 > ranked_answer2 > ranked_answer3 > ...\n"
                     "No explanation.\n\n"
                     "QUESTION:\n"
                     f"{question}\n\n"
