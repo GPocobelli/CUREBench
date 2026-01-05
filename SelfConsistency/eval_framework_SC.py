@@ -23,7 +23,7 @@ import sys
 import logging
 import argparse
 from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from tqdm import tqdm
 from abc import ABC, abstractmethod
 import csv
@@ -235,18 +235,21 @@ class LocalModel(BaseModel):
                 return_tensors="pt",
             ).to(self.model.device)
 
+        # Robust padding + attention mask
+        # Ensure we always have pad_token_id and attention_mask defined.
         if self.tokenizer.pad_token_id is None:
-        # safest fallback: use eos as pad token (common for decoder-only LMs)
+            # common safe fallback for decoder-only LMs
             self.tokenizer.pad_token = self.tokenizer.eos_token
-        
-            pad_id = self.tokenizer.pad_token_id
-            attention_mask = (input_ids != pad_id).long()
+
+        pad_id = self.tokenizer.pad_token_id
+        attention_mask = (input_ids != pad_id).long()
+
     
             
-            gen_kwargs = dict(
-                    max_new_tokens=max_tokens,
-                    pad_token_id=pad_id, 
-            )
+        gen_kwargs = dict(
+                max_new_tokens=max_tokens,
+                pad_token_id=pad_id, 
+        )
 
         if temperature and temperature > 0:
             gen_kwargs.update(
@@ -267,6 +270,14 @@ class LocalModel(BaseModel):
 
         complete_messages = messages + [{"role": "assistant", "content": response_text}]
         return response_text, complete_messages
+
+
+
+
+
+
+
+
 
 
 class CustomModel(BaseModel):
@@ -428,6 +439,23 @@ class GPTOSS20BModel(BaseModel):
             reasoning_trace = [{"role": "assistant", "content": text}]
 
         return final_response.strip(), reasoning_trace
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class CompetitionKit:
@@ -638,7 +666,12 @@ class CompetitionKit:
 
 
 
-
+    def _format_options_block(self, options: Dict[str, str]) -> str:
+        """Format options deterministically as in classic MCQ prompts."""
+        if not options:
+            return ""
+        letters = [k for k in ["A", "B", "C", "D", "E"] if k in options]
+        return "\n".join([f"{k}. {options[k]}" for k in letters])
     
     # =====================================================================
     # FIXED: CoT-safe prompts + syntactically safe meta_prompt
@@ -660,15 +693,18 @@ class CompetitionKit:
         
         if question_type == "multi_choice":
             prompt = (
-                "The following is a multi_choice question.\n"
+                "The following is a multi_choice question with options.\n"
                 "You are a medical expert that answers multiple choice questions about medical knowledge.\n\n"
                 "INSTRUCTIONS:\n"
-                "- Before answering, let's think step by step and break it down into sub-problems.\n"
-                "- Then provide the final answer in exactly this format:\n"
-                "  The answer is X.\n"
-                "  where X is one of A, B, C, D, E.\n\n"
+                "- Return exactly one letter A, B, C, D, or E.\n"
+                "- Then provide the final answer in exactly this format, whereby you just chose one :\n" 
+                " The answer is: A, B, C, D or E.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
+                "OPTIONS:\n"
+                f"{options_block}\n\n"
+                "Let's think step by step.\n"
+                "ANSWER:"
             )
 
             
@@ -719,8 +755,6 @@ class CompetitionKit:
             prompt = (
                 "The following is a open_ended question.\n"
                 "You are a medical expert that answers open-end questions about medical knowledge.\n\n"
-                "REASONING (internal):\n"
-                "Before answering, let's think step by step and break it down into sub-problems.\n"
                 "OUTPUT FORMAT:\n"
                 "1) Recommendation (1–3 sentences)\n"
                 "2) Key rationale (3–5 bullet points)\n"
@@ -728,6 +762,7 @@ class CompetitionKit:
                 "If unsure, state assumptions and missing information.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
+                "Let's think step by step.\n"
                 "ANSWER:"
             )
             response, reasoning_trace = self.model.inference(prompt, temperature=0.0)
@@ -743,17 +778,19 @@ class CompetitionKit:
         # ------------------------------------------------------------------------------------
         
         elif question_type == "open_ended_multi_choice":
+            options_block = self._format_options_block(example.get("options", {}))
             prompt = (
-                "The following is a open_ended_multi_choice question.\n"
+                "The following is a open_ended_multi_choice question with options.\n"
                 "You are a medical expert that answers open-end questions about medical knowledge.\n\n"
-                "REASONING (internal):\n"
-                "Before answering, let's think step by step and break it down into sub-problems.\n"
                 "INSTRUCTIONS:\n"
                 "- Answer in 1-3 bullet points.\n"
-                "Each bullet MUST include concrete identifiers from the options (e.g. drug names, regimen, placebo vs active).\n"
+                "- Each bullet MUST include concrete identifiers from the options (e.g. drug names, regimen, placebo vs active).\n"
                 "- Do NOT mention option letters (A, B, C, D, or E) in this step.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
+                "OPTIONS:\n"
+                f"{options_block}\n\n"
+                "Let's think step by step.\n"
                 "ANSWER:"
             )
 
@@ -773,13 +810,17 @@ class CompetitionKit:
                             "Given the agent answer below, choose the single best matching option.\n"
                             "Analyze it and choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n\n"
                             "If uncertain, pick the closest match.\n"
-                            "Let's think step by step.\n"
-
-                            "STRICT OUTPUT:\n"
-                            "Return exactly one letter A, B, C, D, or E.\n"
-                            "No extra text.\n\n"
-                            "Agent's answer:\n"
+                            "RULES:\n"
+                            "- Output MUST be exactly one character: A, B, C, D, or E.\n"
+                            "- Do not output any other text.\n"
+                            "- No extra text.\n\n"
+                            "QUESTION:\n"
+                            f"{question}\n\n"
+                            "OPTIONS:\n"
+                            f"{options_block}\n\n"
+                            "AGENT ANSWER:\n"
                             f"{r}\n\n"
+                            "OUTPUT:"
                         )
 
                         # mapping can be greedy (temperature=0) to reduce noise in the mapper
@@ -829,6 +870,12 @@ class CompetitionKit:
                     ],
                 }
                 return prediction, reasoning_trace
+    
+    
+    
+    
+    
+    
     
             # --- fallback single decode (your current behavior) ---
             response, reasoning_trace = self.model.inference(prompt, temperature=0.0)
