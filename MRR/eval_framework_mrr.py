@@ -229,19 +229,19 @@ class LocalModel(BaseModel):
     def inference(self, prompt: str, max_tokens: int = 1024, **kwargs) -> Tuple[str, List[Dict]]:
         """Local model inference"""
         
-        temperature = float(kwargs.get("temperature", 0.4))
-        top_p = float(kwargs.get("top_p", 0.9))
-        
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": prompt}
         ]
-
+        
         print("messages:", messages)
 
         input_ids = self.tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, return_tensors='pt', enable_thinking=False
         ).to(self.model.device)
+
+        temperature = float(kwargs.get("temperature", 0.4))
+        top_p = float(kwargs.get("top_p", 0.9))
 
         outputs = self.model.generate(
             input_ids,
@@ -249,16 +249,14 @@ class LocalModel(BaseModel):
             top_p=top_p,
             max_new_tokens=max_tokens,
             pad_token_id=self.tokenizer.eos_token_id,
-            do_sample=(temperature > 0),  # sinnvoller als fix False
+            do_sample=(temperature > 0.0),   # wichtig: Sampling nur wenn temp > 0
         )
 
         response = outputs[0][input_ids.shape[-1]:]
         response_text = self.tokenizer.decode(response, skip_special_tokens=True)
         print("response_text:", response_text)
 
-        # Create complete conversation history
         complete_messages = messages + [{"role": "assistant", "content": response_text}]
-
         return response_text, complete_messages
 
 
@@ -710,15 +708,20 @@ class CompetitionKit:
         question_type = example["question_type"]
 
         prediction = {"choice": "", "open_ended_answer": ""}
+
+        # Voting config IMMER am Anfang (sonst: UnboundLocalError in open_ended_multi_choice)
+        voting_cfg = (self.config.get("voting") or {})
+        method = (voting_cfg.get("method") or "").lower()
+        k_votes = int(voting_cfg.get("k", 1))
+        vote_temperature = float(voting_cfg.get("temperature", 0.7))
+        vote_top_p = float(voting_cfg.get("top_p", 0.9))
+        
         
         if question_type == "multi_choice":
-            voting_cfg = (self.config.get("voting") or {})
-            method = (voting_cfg.get("method") or "").lower()
-            k_votes = int(voting_cfg.get("k", 1))
-
+            
             if method == "mrrv" and k_votes > 1:
-                ranked_lists = []
-                all_traces = []
+                ranked_lists: List[List[str]] = []
+                all_traces: List[Dict] = []
 
                 rank_prompt = (
                     "The following is a multi_choice question.\n"
@@ -733,7 +736,9 @@ class CompetitionKit:
                 )
 
                 for _ in range(k_votes):
-                    rank_resp, rank_trace = self.model.inference(rank_prompt, temperature=0.7, top_p=0.9)
+                    rank_resp, rank_trace = self.model.inference(rank_prompt, 
+                                                                 temperature=vote_temperature, 
+                                                                 top_p=vote_top_p)
                     all_traces.extend(rank_trace)
                     ranked_lists.append(self._extract_ranking_A_to_E(rank_resp))
 
@@ -746,6 +751,13 @@ class CompetitionKit:
                 return prediction, all_traces
 
 
+
+
+
+
+    # -------------------------
+    # MULTI_CHOICE: Default (Single Letter Prompt)
+    # -------------------------
 
         if question_type == "multi_choice":
             prompt = (
