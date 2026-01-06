@@ -238,12 +238,19 @@ class LocalModel(BaseModel):
         
         print("messages:", messages)
 
-        enc = self.tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            return_tensors="pt",
-            enable_thinking=False
-        )
+        try:
+            enc = self.tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            )
+        except TypeError:
+            # manche Tokenizer haben andere Signaturen
+            enc = self.tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            )
 
         input_ids = enc.to(self.model.device)
         attention_mask = torch.ones_like(input_ids, device=self.model.device)
@@ -725,25 +732,32 @@ class CompetitionKit:
             return "NOTAVALUE", {}
 
         scores = {c: 0.0 for c in candidates}
-
         for ranking in ranked_lists:
-            # Defensive: falls ranking nicht vollständig ist, hinten auffüllen
-            local = ranking[:]
-            seen = set(local)
+            # Defensive: normalisiere Ranking
+            local = []
+            seen = set()
+            for x in (ranking or []):
+                x = str(x).strip().upper()
+                if x in scores and x not in seen:
+                    seen.add(x)
+                    local.append(x)
+
+            # Fehlende Kandidaten hinten anhängen
             for c in candidates:
                 if c not in seen:
                     local.append(c)
                     seen.add(c)
-            local = local[:len(candidates)]
 
-            pos = {c: (local.index(c) + 1) for c in candidates}  # 1-basiert
+            # Positionsmap in einem Pass (O(n))
+            pos = {c: idx + 1 for idx, c in enumerate(local[:len(candidates)])}
+
             for c in candidates:
-                scores[c] += 1.0 / pos[c]
+                scores[c] += 1.0 / float(pos[c])
 
         for c in candidates:
-            scores[c] /= k
+            scores[c] /= float(k)
 
-        # Tie-break: alphabetisch
+        # Tie-break: höchste Score, dann alphabetisch
         winner = sorted(candidates, key=lambda c: (-scores[c], c))[0]
         return winner, scores
 
@@ -760,12 +774,7 @@ class CompetitionKit:
         candidates: List[str],
         strategy: str = "mrrv",   # "mrrv" oder "majority_top1"
     ) -> Tuple[str, Dict[str, float]]:
-        """
-        Aggregiert k Rankings und wählt finalen Kandidaten.
-        - mrrv: nutzt _mrrv_vote()
-        - majority_top1: zählt nur Platz-1 Stimmen
-        """
-        if not ranked_lists:
+        if not ranked_lists or not candidates:
             return "NOTAVALUE", {}
 
         strategy = (strategy or "mrrv").lower()
@@ -775,13 +784,11 @@ class CompetitionKit:
             for r in ranked_lists:
                 if r and r[0] in counts:
                     counts[r[0]] += 1.0
-            # tie-break: alphabetisch
             winner = sorted(candidates, key=lambda c: (-counts[c], c))[0]
             return winner, counts
 
         # default: mrrv
-        winner, scores = self._mrrv_vote(ranked_lists, candidates)
-        return winner, scores
+        return self._mrrv_vote(ranked_lists, candidates)
 
 
     def _log_vote_summary(
@@ -791,17 +798,72 @@ class CompetitionKit:
         scores: Dict[str, float],
         ranked_lists: List[List[str]],
     ):
-        # kompakt, aber reproduzierbar
-        logger.info(f"{prefix} VOTE SUMMARY | winner={winner} | scores={scores} | rankings={ranked_lists}")
+        logger.info(
+            f"{prefix} RANKING-VOTE SUMMARY | winner={winner} | scores={scores} | ranked_lists={ranked_lists}"
+        )
+
+
+    def _log_top1_vote_summary(
+        self,
+        prefix: str,
+        winner: str,
+        counts: Dict[str, float],
+        votes: List[str],
+    ):
+        logger.info(
+            f"{prefix} TOP1-VOTE SUMMARY | winner={winner} | counts={counts} | votes={votes}"
+        )
 
 
 
 
 
 
+    def _majority_vote(self, votes: List[str], candidates: List[str]) -> Tuple[str, Dict[str, float]]:
+        counts = {c: 0.0 for c in candidates}
+        for v in votes:
+            if v in counts:
+                counts[v] += 1.0
+        winner = sorted(candidates, key=lambda c: (-counts[c], c))[0]
+        return winner, counts
 
 
 
+
+    def _final_choice_override(self, example: Dict, choice: str, prediction_text: str) -> Tuple[str, str]:
+        qtype = example.get("question_type", "")
+        if qtype != "open_ended_multi_choice":
+            return choice, ""
+
+        meta_q = (example.get("meta_question") or "")
+        if not meta_q:
+            return choice, ""
+
+        text = (prediction_text or "").lower()
+
+        # very simple safety heuristic
+        emergency_kw = ["emergency", "nearest emergency room", "epinephrine", "call 911", "seek emergency"]
+        if any(k in text for k in emergency_kw):
+            # try to pick the option whose text mentions emergency care
+            # Parse meta options like "B: ...", "C: ..." etc.
+            candidates = self._extract_option_letters(meta_q)
+            opt_map = {}
+            for line in meta_q.splitlines():
+                m = re.match(r"^\s*([A-E])\s*:\s*(.+)\s*$", line.strip())
+                if m:
+                    opt_map[m.group(1).upper()] = m.group(2).strip().lower()
+
+            for c in candidates:
+                if "emergency" in opt_map.get(c, ""):
+                    if c != choice:
+                        return c, "Heuristic override: severe allergic reaction keywords -> choose emergency-care option."
+                    break
+
+        return choice, ""
+
+
+    def _log_final_override(self, prefix: str, old: str, new: str, reason: str):
+        logger.info(f"{prefix} FINAL-OVERRIDE | old={old} -> new={new} | reason={reason}")
 
 
 
@@ -825,20 +887,21 @@ class CompetitionKit:
 
         # Voting config IMMER am Anfang (sonst: UnboundLocalError in open_ended_multi_choice)
         voting_cfg = (self.config.get("voting") or {})
-        method = (voting_cfg.get("method") or "").lower()
+        method = (voting_cfg.get("method") or "").lower()          # e.g. "mrrv"
         k_votes = int(voting_cfg.get("k", 1))
         vote_temperature = float(voting_cfg.get("temperature", 0.7))
         vote_top_p = float(voting_cfg.get("top_p", 0.9))
 
-        # ✅ Optional: defensive defaults (verhindert NameErrors bei späteren Änderungen)
-        candidates: List[str] = []
-        cand_str: str = ""
-        
+        # ---------------------------------------------------------
+        # MULTI_CHOICE
+        # ---------------------------------------------------------
         if question_type == "multi_choice":
-            candidates = self._extract_option_letters(question)  # z.B. ["A","B","C","D"]
-            cand_str = " > ".join(candidates)
-            
+            candidates = self._extract_option_letters(question)
+            allowed = ", ".join(candidates)
+
+            # MRRV path
             if method == "mrrv" and k_votes > 1:
+                cand_str = " > ".join(candidates)
                 ranked_lists: List[List[str]] = []
                 all_traces: List[Dict] = []
 
@@ -858,20 +921,21 @@ class CompetitionKit:
                 )
 
                 for _ in range(k_votes):
-                    rank_resp, rank_trace = self.model.inference(rank_prompt, 
-                                                                 temperature=vote_temperature, 
-                                                                 top_p=vote_top_p)
+                    rank_resp, rank_trace = self.model.inference(
+                        rank_prompt,
+                        temperature=vote_temperature,
+                        top_p=vote_top_p,
+                    )
                     all_traces.extend(rank_trace)
                     ranked_lists.append(self._extract_ranking(rank_resp, candidates))
-
 
                 winner, scores = self._aggregate_rankings_and_pick(
                     ranked_lists=ranked_lists,
                     candidates=candidates,
-                    strategy="mrrv",   # oder "majority_top1"
+                    strategy="mrrv",
                 )
 
-                self._log_vote_summary(
+                self._log_ranking_vote_summary(
                     prefix=f"[multi_choice id={example.get('id','?')}]",
                     winner=winner,
                     scores=scores,
@@ -879,40 +943,32 @@ class CompetitionKit:
                 )
 
                 prediction["choice"] = winner
-                prediction["open_ended_answer"] = f"MRRV winner={winner}; scores={scores}; rankings={ranked_lists}"
+                prediction["open_ended_answer"] = (
+                    f"MRRV winner={winner}; scores={scores}; rankings={ranked_lists}"
+                )
                 return prediction, all_traces
 
+            # Single-letter default
+            prompt = (
+                "The following is a multi_choice question.\n"
+                "You are a medical expert.\n\n"
+                "STRICT OUTPUT:\n"
+                f"Return EXACTLY ONE LETTER: {allowed}.\n"
+                "No punctuation, no words, no explanation.\n\n"
+                "QUESTION:\n"
+                f"{question}\n\n"
+                "FINAL ANSWER (one letter only):"
+            )
+            response, reasoning_trace = self.model.inference(prompt)
+            choice = self._extract_multiple_choice_answer(response)
+            prediction["choice"] = choice if choice in candidates else "NOTAVALUE"
+            prediction["open_ended_answer"] = response.strip()
+            return prediction, reasoning_trace
 
 
-
-
-
-    # -------------------------
-    # MULTI_CHOICE: Default (Single Letter Prompt)
-    # -------------------------
-
-            else:
-                candidates = self._extract_option_letters(question)
-                allowed = ", ".join(candidates)
-                prompt = (
-                    "The following is a multi_choice question.\n"
-                    "You are a medical expert.\n\n"
-                    "STRICT OUTPUT:\n"
-                    f"Return EXACTLY ONE LETTER: {allowed}.\n"                
-                    "No punctuation, no words, no explanation.\n\n"
-                    "QUESTION:\n"
-                    f"{question}\n\n"
-                    "FINAL ANSWER (one letter only):"
-                )
-                response, reasoning_trace = self.model.inference(prompt)
-                choice = self._extract_multiple_choice_answer(response)
-                prediction["choice"] = choice if choice in candidates else ""
-                prediction["open_ended_answer"] = response.strip()
-                return prediction, reasoning_trace
-
-
-
-
+    # ---------------------------------------------------------
+    # OPEN_ENDED
+    # ---------------------------------------------------------
 
         if question_type == "open_ended":
             prompt = (
@@ -932,6 +988,12 @@ class CompetitionKit:
             prediction["open_ended_answer"] = response.strip()
             return prediction, reasoning_trace
 
+
+
+    # ---------------------------------------------------------
+    # OPEN_ENDED_MULTI_CHOICE
+    # ---------------------------------------------------------
+
         if question_type == "open_ended_multi_choice":
             prompt = (
                 "The following is a open_ended_multi_choice question.\n"
@@ -947,17 +1009,19 @@ class CompetitionKit:
             response, reasoning_trace = self.model.inference(prompt)
             prediction["open_ended_answer"] = response.strip()
 
-            # Meta-Decision (auch hier MRRV möglich)
-            if "meta_question" in example:
-                if method == "mrrv" and k_votes > 1:
-                    meta_candidates = self._extract_option_letters(example["meta_question"])
-                    meta_cand_str = " > ".join(meta_candidates)
+            meta_q = example.get("meta_question")
+            if meta_q:
+                meta_candidates = self._extract_option_letters(meta_q)
+                allowed = ", ".join(meta_candidates)
 
+                # Meta MRRV
+                if method == "mrrv" and k_votes > 1:
+                    meta_cand_str = " > ".join(meta_candidates)
                     ranked_lists: List[List[str]] = []
 
                     for _ in range(k_votes):
                         meta_rank_prompt = (
-                            f"{example['meta_question']}\n"
+                            f"{'meta_q'}\n"
                             "You are a helpful assistant who reviews an open-end answer.\n\n"
                             "Task: Rank the options from best match to worst match.\n"
                             "STRICT OUTPUT:\n"
@@ -974,20 +1038,18 @@ class CompetitionKit:
                         meta_rank_resp, meta_rank_trace = self.model.inference(
                             meta_rank_prompt,
                             temperature=vote_temperature,
-                            top_p=vote_top_p
+                            top_p=vote_top_p,
                         )
                         reasoning_trace.extend(meta_rank_trace)
-
-                        # ✅ FIX: parse the ranking we just got, using meta candidates
                         ranked_lists.append(self._extract_ranking(meta_rank_resp, meta_candidates))
 
                     winner, scores = self._aggregate_rankings_and_pick(
                         ranked_lists=ranked_lists,
                         candidates=meta_candidates,
-                        strategy="mrrv",   # oder "majority_top1"
+                        strategy="mrrv",
                     )
 
-                    self._log_vote_summary(
+                    self._log_ranking_vote_summary(
                         prefix=f"[meta_vote id={example.get('id','?')}]",
                         winner=winner,
                         scores=scores,
@@ -996,38 +1058,93 @@ class CompetitionKit:
 
                     prediction["choice"] = winner
                     prediction["open_ended_answer"] = (
-                        prediction.get("open_ended_answer", "").strip()
+                        prediction["open_ended_answer"].strip()
                         + f"\n\nMRRV(meta) winner={winner}; scores={scores}; rankings={ranked_lists}"
                     ).strip()
-                    return prediction, reasoning_trace
 
 
-                # default meta single-letter
-                meta_prompt = (
-                    f"{example['meta_question']}\n"
-                    "You are a helpful assistant who reviews an open-end answer.\n\n"
-                    "Analyze it and choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n\n"
-                    "If uncertain, pick the closest match.\n"
-                    "STRICT OUTPUT:\n"
-                    f"Return exactly one letter from: {allowed}.\n"
-                    "No explanation.\n\n"
-                    "Agent's answer:\n"
-                    f"{response.strip()}\n\n"
-                    "FINAL ANSWER (one letter only):"
-                )
-                meta_response, meta_reasoning = self.model.inference(meta_prompt)
-                reasoning_trace.extend(meta_reasoning)
-                choice = self._extract_multiple_choice_answer(meta_response)
-                prediction["choice"] = choice if choice else ""
+                # Meta majority-letter
+                else:
+                    meta_mode = (voting_cfg.get("meta_mode") or "majority_letter").lower()
+
+                    if meta_mode == "majority_letter" and k_votes > 1:
+                        votes: List[str] = []
+                
+                        meta_prompt = (
+                            f"{example['meta_question']}\n"
+                            "You are a helpful assistant who reviews an open-end answer.\n\n"
+                            "Analyze it and choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n\n"
+                            "If uncertain, pick the closest match.\n"
+                            "STRICT OUTPUT:\n"
+                            f"Return exactly one letter from: {allowed}.\n"
+                            "No explanation.\n\n"
+                            "Agent's answer:\n"
+                            f"{response.strip()}\n\n"
+                            "FINAL ANSWER (one letter only):\n"
+                        )
+                    
+                        for _ in range(k_votes):
+                            meta_resp, meta_trace = self.model.inference(
+                                meta_prompt,
+                                temperature=vote_temperature,
+                                top_p=vote_top_p,
+                            )
+                            reasoning_trace.extend(meta_trace)
+                            v = self._extract_multiple_choice_answer(meta_resp)
+                            votes.append(v if v in meta_candidates else "")
+
+                        winner, counts = self._majority_vote(votes, meta_candidates)
+
+                        self._log_top1_vote_summary(
+                            prefix=f"[meta_choice id={example.get('id','?')}]",
+                            winner=winner,
+                            counts=counts,
+                            votes=votes,
+                        )
+
+                        prediction["choice"] = winner
+                        prediction["open_ended_answer"] = (
+                            prediction["open_ended_answer"].strip()
+                            + f"\n\nMETA-CHOICE winner={winner}; counts={counts}; votes={votes}"
+                        ).strip()
+                    else:
+                        # Single meta decision
+                        meta_prompt = (
+                            f"{meta_q}\n"
+                            "You are a helpful assistant who reviews an open-end answer.\n\n"
+                            "Choose the single option letter whose text best matches the agent answer.\n"
+                            "STRICT OUTPUT:\n"
+                            f"Return exactly one letter from: {allowed}.\n"
+                            "No explanation.\n\n"
+                            "Agent's answer:\n"
+                            f"{response.strip()}\n\n"
+                            "FINAL ANSWER (one letter only):"
+                        )
+                        meta_resp, meta_trace = self.model.inference(meta_prompt)
+                        reasoning_trace.extend(meta_trace)
+                        v = self._extract_multiple_choice_answer(meta_resp)
+                        prediction["choice"] = v if v in meta_candidates else "NOTAVALUE"
+
+                # Final heuristic override (wird NICHT wieder überschrieben)
+                old = prediction.get("choice") or "NOTAVALUE"
+                new, reason = self._final_choice_override(example, old, prediction.get("open_ended_answer", ""))
+                if reason and new and new != old:
+                    self._log_final_override(
+                        prefix=f"[id={example.get('id','?')}]",
+                        old=old,
+                        new=new,
+                        reason=reason,
+                    )
+                    prediction["choice"] = new
+
                 return prediction, reasoning_trace
 
-            # fallback: wenn meta_question fehlt, versuche Letter aus der Antwort
+            # Fallback wenn meta_question fehlt: versuche Letter aus response zu extrahieren
             choice = self._extract_multiple_choice_answer(response)
-            prediction["choice"] = choice if choice else ""
+            prediction["choice"] = choice if choice else "NOTAVALUE"
             return prediction, reasoning_trace
 
         raise ValueError(f"Unsupported question type: {question_type}")
-
 
 
 
