@@ -28,6 +28,8 @@ from tqdm import tqdm
 from abc import ABC, abstractmethod
 import csv
 import re  # needed for fallback and existing extractor patterns
+import torch
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -236,22 +238,30 @@ class LocalModel(BaseModel):
         
         print("messages:", messages)
 
-        input_ids = self.tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors='pt', enable_thinking=False
-        ).to(self.model.device)
+        enc = self.tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            return_tensors="pt",
+            enable_thinking=False
+        )
+
+        input_ids = enc.to(self.model.device)
+        attention_mask = torch.ones_like(input_ids, device=self.model.device)
 
         temperature = float(kwargs.get("temperature", 0.4))
         top_p = float(kwargs.get("top_p", 0.9))
 
         outputs = self.model.generate(
-            input_ids,
+            input_ids=input_ids,
+            attention_mask=attention_mask,   # ✅ FIX
             temperature=temperature,
             top_p=top_p,
             max_new_tokens=max_tokens,
             pad_token_id=self.tokenizer.eos_token_id,
-            do_sample=(temperature > 0.0),   # wichtig: Sampling nur wenn temp > 0
+            do_sample=(temperature > 0.0),
         )
-
+        
+        
         response = outputs[0][input_ids.shape[-1]:]
         response_text = self.tokenizer.decode(response, skip_special_tokens=True)
         print("response_text:", response_text)
@@ -676,11 +686,12 @@ class CompetitionKit:
 
         text = response.strip().upper()
 
+        text = re.sub(r"\b(NONE|NOTAVALUE|NULL|NAN)\b", " ", text)
+
         # Nur Kandidatenbuchstaben extrahieren (als einzelne Tokens)
         pattern = r"(?<![A-Z])(" + "|".join(map(re.escape, candidates)) + r")(?![A-Z])"
         found = re.findall(pattern, text)
 
-        # Deduplizieren in Reihenfolge
         ranking = []
         seen = set()
         for x in found:
@@ -688,9 +699,8 @@ class CompetitionKit:
                 seen.add(x)
                 ranking.append(x)
 
-        # Wenn zu wenig extrahiert wurde, ist der Output faktisch kaputt -> fallback
-        # (Schwellwert: mind. 2 Treffer oder vollständiges Ranking)
-        if len(ranking) < max(2, min(3, len(candidates))):
+        # Wenn GAR nichts gefunden: fallback
+        if len(ranking) == 0:
             return candidates[:]
 
         # Fehlende Kandidaten hinten anfügen
@@ -762,7 +772,10 @@ class CompetitionKit:
         k_votes = int(voting_cfg.get("k", 1))
         vote_temperature = float(voting_cfg.get("temperature", 0.7))
         vote_top_p = float(voting_cfg.get("top_p", 0.9))
-        
+
+        # ✅ Optional: defensive defaults (verhindert NameErrors bei späteren Änderungen)
+        candidates: List[str] = []
+        cand_str: str = ""
         
         if question_type == "multi_choice":
             candidates = self._extract_option_letters(question)  # z.B. ["A","B","C","D"]
@@ -792,7 +805,8 @@ class CompetitionKit:
                                                                  temperature=vote_temperature, 
                                                                  top_p=vote_top_p)
                     all_traces.extend(rank_trace)
-                    ranked_lists.append(self._extract_ranking(rank_resp))
+                    ranked_lists.append(self._extract_ranking(rank_resp, candidates))
+
 
                 winner, scores = self._mrrv_vote(ranked_lists, candidates)
 
@@ -809,24 +823,24 @@ class CompetitionKit:
     # MULTI_CHOICE: Default (Single Letter Prompt)
     # -------------------------
 
-        if question_type == "multi_choice":
-            candidates = self._extract_option_letters(question)
-            allowed = ", ".join(candidates)
-            prompt = (
-                "The following is a multi_choice question.\n"
-                "You are a medical expert.\n\n"
-                "STRICT OUTPUT:\n"
-                f"Return EXACTLY ONE LETTER: {allowed}.\n"                
-                "No punctuation, no words, no explanation.\n\n"
-                "QUESTION:\n"
-                f"{question}\n\n"
-                "FINAL ANSWER (one letter only):"
-            )
-            response, reasoning_trace = self.model.inference(prompt)
-            choice = self._extract_multiple_choice_answer(response)
-            prediction["choice"] = choice if choice in candidates else ""
-            prediction["open_ended_answer"] = response.strip()
-            return prediction, reasoning_trace
+            else:
+                candidates = self._extract_option_letters(question)
+                allowed = ", ".join(candidates)
+                prompt = (
+                    "The following is a multi_choice question.\n"
+                    "You are a medical expert.\n\n"
+                    "STRICT OUTPUT:\n"
+                    f"Return EXACTLY ONE LETTER: {allowed}.\n"                
+                    "No punctuation, no words, no explanation.\n\n"
+                    "QUESTION:\n"
+                    f"{question}\n\n"
+                    "FINAL ANSWER (one letter only):"
+                )
+                response, reasoning_trace = self.model.inference(prompt)
+                choice = self._extract_multiple_choice_answer(response)
+                prediction["choice"] = choice if choice in candidates else ""
+                prediction["open_ended_answer"] = response.strip()
+                return prediction, reasoning_trace
 
 
 
@@ -870,8 +884,9 @@ class CompetitionKit:
                 if method == "mrrv" and k_votes > 1:
                     meta_candidates = self._extract_option_letters(example["meta_question"])
                     meta_cand_str = " > ".join(meta_candidates)
+
                     ranked_lists: List[List[str]] = []
-                    
+
                     for _ in range(k_votes):
                         meta_rank_prompt = (
                             f"{example['meta_question']}\n"
@@ -887,12 +902,23 @@ class CompetitionKit:
                             f"{response.strip()}\n\n"
                             "FINAL RANKING:"
                         )
-                        meta_rank_resp, meta_rank_trace = self.model.inference(meta_rank_prompt)
+
+                        meta_rank_resp, meta_rank_trace = self.model.inference(
+                            meta_rank_prompt,
+                            temperature=vote_temperature,
+                            top_p=vote_top_p
+                        )
                         reasoning_trace.extend(meta_rank_trace)
+
+                        # ✅ FIX: parse the ranking we just got, using meta candidates
                         ranked_lists.append(self._extract_ranking(meta_rank_resp, meta_candidates))
 
                     winner, scores = self._mrrv_vote(ranked_lists, meta_candidates)
                     prediction["choice"] = winner
+                    prediction["open_ended_answer"] = (
+                        prediction.get("open_ended_answer", "").strip()
+                        + f"\n\nMRRV(meta) winner={winner}; scores={scores}; rankings={ranked_lists}"
+                    ).strip()
                     return prediction, reasoning_trace
 
                 # default meta single-letter
@@ -902,7 +928,7 @@ class CompetitionKit:
                     "Analyze it and choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n\n"
                     "If uncertain, pick the closest match.\n"
                     "STRICT OUTPUT:\n"
-                    "Return exactly one letter A, B, C, D, or E.\n"
+                    f"Return exactly one letter from: {allowed}.\n"
                     "No explanation.\n\n"
                     "Agent's answer:\n"
                     f"{response.strip()}\n\n"
