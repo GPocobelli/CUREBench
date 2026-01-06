@@ -753,6 +753,63 @@ class CompetitionKit:
 
 
 
+
+    def _aggregate_rankings_and_pick(
+        self,
+        ranked_lists: List[List[str]],
+        candidates: List[str],
+        strategy: str = "mrrv",   # "mrrv" oder "majority_top1"
+    ) -> Tuple[str, Dict[str, float]]:
+        """
+        Aggregiert k Rankings und wählt finalen Kandidaten.
+        - mrrv: nutzt _mrrv_vote()
+        - majority_top1: zählt nur Platz-1 Stimmen
+        """
+        if not ranked_lists:
+            return "NOTAVALUE", {}
+
+        strategy = (strategy or "mrrv").lower()
+
+        if strategy == "majority_top1":
+            counts = {c: 0.0 for c in candidates}
+            for r in ranked_lists:
+                if r and r[0] in counts:
+                    counts[r[0]] += 1.0
+            # tie-break: alphabetisch
+            winner = sorted(candidates, key=lambda c: (-counts[c], c))[0]
+            return winner, counts
+
+        # default: mrrv
+        winner, scores = self._mrrv_vote(ranked_lists, candidates)
+        return winner, scores
+
+
+    def _log_vote_summary(
+        self,
+        prefix: str,
+        winner: str,
+        scores: Dict[str, float],
+        ranked_lists: List[List[str]],
+    ):
+        # kompakt, aber reproduzierbar
+        logger.info(f"{prefix} VOTE SUMMARY | winner={winner} | scores={scores} | rankings={ranked_lists}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     # =====================================================================
     # FIXED: CoT-safe prompts + syntactically safe meta_prompt
     # - Replaces _get_prediction_with_trace with CoT-safe prompts
@@ -808,7 +865,18 @@ class CompetitionKit:
                     ranked_lists.append(self._extract_ranking(rank_resp, candidates))
 
 
-                winner, scores = self._mrrv_vote(ranked_lists, candidates)
+                winner, scores = self._aggregate_rankings_and_pick(
+                    ranked_lists=ranked_lists,
+                    candidates=candidates,
+                    strategy="mrrv",   # oder "majority_top1"
+                )
+
+                self._log_vote_summary(
+                    prefix=f"[multi_choice id={example.get('id','?')}]",
+                    winner=winner,
+                    scores=scores,
+                    ranked_lists=ranked_lists,
+                )
 
                 prediction["choice"] = winner
                 prediction["open_ended_answer"] = f"MRRV winner={winner}; scores={scores}; rankings={ranked_lists}"
@@ -913,13 +981,26 @@ class CompetitionKit:
                         # ✅ FIX: parse the ranking we just got, using meta candidates
                         ranked_lists.append(self._extract_ranking(meta_rank_resp, meta_candidates))
 
-                    winner, scores = self._mrrv_vote(ranked_lists, meta_candidates)
+                    winner, scores = self._aggregate_rankings_and_pick(
+                        ranked_lists=ranked_lists,
+                        candidates=meta_candidates,
+                        strategy="mrrv",   # oder "majority_top1"
+                    )
+
+                    self._log_vote_summary(
+                        prefix=f"[meta_vote id={example.get('id','?')}]",
+                        winner=winner,
+                        scores=scores,
+                        ranked_lists=ranked_lists,
+                    )
+
                     prediction["choice"] = winner
                     prediction["open_ended_answer"] = (
                         prediction.get("open_ended_answer", "").strip()
                         + f"\n\nMRRV(meta) winner={winner}; scores={scores}; rankings={ranked_lists}"
                     ).strip()
                     return prediction, reasoning_trace
+
 
                 # default meta single-letter
                 meta_prompt = (
