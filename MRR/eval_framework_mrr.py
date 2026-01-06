@@ -624,25 +624,63 @@ class CompetitionKit:
 
 
 
-    def _extract_ranking_A_to_E(self, response: str) -> List[str]:
+
+
+
+
+
+
+
+
+    def _extract_option_letters(self, question_text: str) -> List[str]:
         """
-        Erwartet ein Ranking der Optionen A-E.
-        Akzeptierte Formate (Beispiele):
-        - A > C > B > D > E
-        - A,C,B,D,E
-        - A C B D E
-        Gibt eine Liste wie ["A","C","B","D","E"] zurück.
-        Fallback: ["A","B","C","D","E"] wenn nicht parsebar.
+        Extrahiert vorhandene Antwortoptionen aus dem Frage-Text.
+        Unterstützt Formate wie:
+        A: ..., B: ... / A) ... / A. ...
+        Rückgabe: z.B. ["A","B","C","D"].
+        """
+        if not question_text:
+            return ["A", "B", "C", "D", "E"]
+
+        text = question_text.strip()
+
+        # Option-Markierungen am Zeilenanfang: "A:", "B)", "C." etc.
+        letters = re.findall(r"(?m)^\s*([A-E])\s*[:\)\.]\s+", text.upper())
+        # Deduplizieren in Reihenfolge
+        out = []
+        seen = set()
+        for x in letters:
+            if x not in seen:
+                seen.add(x)
+                out.append(x)
+
+        # Fallback: wenn nichts gefunden, Default
+        return out if out else ["A", "B", "C", "D", "E"]
+
+
+
+
+
+    def _extract_ranking(self, response: str, candidates: List[str]) -> List[str]:
+        """
+        Parse eines Rankings für die gegebenen candidates.
+        Akzeptiert z.B.:
+        A > C > B
+        A,C,B
+        A C B
+        > B > A > C  (wird repariert, solange Buchstaben vorhanden)
+        Wenn unbrauchbar: gibt candidates in Originalreihenfolge zurück.
         """
         if not response:
-            return ["A", "B", "C", "D", "E"]
+            return candidates[:]  # fallback
 
         text = response.strip().upper()
 
-        # Extrahiere alle Buchstaben A-E in der Reihenfolge ihres Auftretens
-        found = re.findall(r"(?<![A-Z])([ABCDE])(?![A-Z])", text)
+        # Nur Kandidatenbuchstaben extrahieren (als einzelne Tokens)
+        pattern = r"(?<![A-Z])(" + "|".join(map(re.escape, candidates)) + r")(?![A-Z])"
+        found = re.findall(pattern, text)
 
-        # Dedupliziere in Reihenfolge
+        # Deduplizieren in Reihenfolge
         ranking = []
         seen = set()
         for x in found:
@@ -650,20 +688,21 @@ class CompetitionKit:
                 seen.add(x)
                 ranking.append(x)
 
-        # Ranking muss vollständig sein
-        all_opts = ["A", "B", "C", "D", "E"]
+        # Wenn zu wenig extrahiert wurde, ist der Output faktisch kaputt -> fallback
+        # (Schwellwert: mind. 2 Treffer oder vollständiges Ranking)
+        if len(ranking) < max(2, min(3, len(candidates))):
+            return candidates[:]
 
-        # ergänzen, falls unvollständig
-        for x in all_opts:
-            if x not in seen:
-                ranking.append(x)
+        # Fehlende Kandidaten hinten anfügen
+        for c in candidates:
+            if c not in seen:
+                ranking.append(c)
 
-        return ranking[:5]
-
-
+        return ranking[:len(candidates)]
 
 
-    def _mrrv_vote(self, ranked_lists: List[List[str]]) -> Tuple[str, Dict[str, float]]:
+
+    def _mrrv_vote(self, ranked_lists: List[List[str]], candidates: List[str]) -> Tuple[str, Dict[str, float]]:
         """
         Mean Reciprocal Rank Voting gemäß:
         MRR(A) = (1/k) * sum_{i=1..k} 1 / rank_A(A_i^r)
@@ -675,18 +714,26 @@ class CompetitionKit:
         if k == 0:
             return "NOTAVALUE", {}
 
-        candidates = ["A", "B", "C", "D", "E"]
         scores = {c: 0.0 for c in candidates}
 
         for ranking in ranked_lists:
-            # 1-basierte Ränge
-            pos = {c: (ranking.index(c) + 1) for c in candidates}
+            # Defensive: falls ranking nicht vollständig ist, hinten auffüllen
+            local = ranking[:]
+            seen = set(local)
+            for c in candidates:
+                if c not in seen:
+                    local.append(c)
+                    seen.add(c)
+            local = local[:len(candidates)]
+
+            pos = {c: (local.index(c) + 1) for c in candidates}  # 1-basiert
             for c in candidates:
                 scores[c] += 1.0 / pos[c]
 
         for c in candidates:
             scores[c] /= k
 
+        # Tie-break: alphabetisch
         winner = sorted(candidates, key=lambda c: (-scores[c], c))[0]
         return winner, scores
 
@@ -728,10 +775,10 @@ class CompetitionKit:
                     "You are a medical expert.\n\n"
                     "OUTPUT RULES (STRICT):\n"
                     "1) Output EXACTLY one line.\n"
-                    "2) The line must contain EXACTLY the unique letters from the options\n"
+                    "2) The line must contain ONLY the option letters shown below, each EXACTLY ONCE.\n"
                     "3) Return the ranking of options by likelihood from best to worst.\n"
-                    "4) Use EXACTLY this separator: ' > ' (space, greater-than, space).\n"
-                    "Format: ranked_answer1 > ranked_answer2 > ranked_answer3 > ...\n"
+                    f"4) Use EXACTLY this separator: ' > ' (space, greater-than, space).\n"
+                    f"5) Output format MUST be exactly: {cand_str}\n"
                     "No explanation.\n\n"
                     "QUESTION:\n"
                     f"{question}\n\n"
@@ -743,14 +790,12 @@ class CompetitionKit:
                                                                  temperature=vote_temperature, 
                                                                  top_p=vote_top_p)
                     all_traces.extend(rank_trace)
-                    ranked_lists.append(self._extract_ranking_A_to_E(rank_resp))
+                    ranked_lists.append(self._extract_ranking(rank_resp))
 
-                winner, scores = self._mrrv_vote(ranked_lists)
+                winner, scores = self._mrrv_vote(ranked_lists, candidates)
 
                 prediction["choice"] = winner
-                # Optional: für Transparenz im Submission-Text
                 prediction["open_ended_answer"] = f"MRRV winner={winner}; scores={scores}; rankings={ranked_lists}"
-                reasoning_trace = all_traces
                 return prediction, all_traces
 
 
@@ -763,6 +808,8 @@ class CompetitionKit:
     # -------------------------
 
         if question_type == "multi_choice":
+            candidates = self._extract_option_letters(question)
+            allowed = ", ".join(candidates)
             prompt = (
                 "The following is a multi_choice question.\n"
                 "You are a medical expert.\n\n"
@@ -775,10 +822,9 @@ class CompetitionKit:
             )
             response, reasoning_trace = self.model.inference(prompt)
             choice = self._extract_multiple_choice_answer(response)
-            prediction["choice"] = choice if choice else ""
+            prediction["choice"] = choice if choice in candidates else ""
             prediction["open_ended_answer"] = response.strip()
             return prediction, reasoning_trace
-
 
 
 
@@ -820,25 +866,30 @@ class CompetitionKit:
             # Meta-Decision (auch hier MRRV möglich)
             if "meta_question" in example:
                 if method == "mrrv" and k_votes > 1:
+                    meta_candidates = self._extract_option_letters(example["meta_question"])
+                    meta_cand_str = " > ".join(meta_candidates)
                     ranked_lists: List[List[str]] = []
+                    
                     for _ in range(k_votes):
                         meta_rank_prompt = (
                             f"{example['meta_question']}\n"
                             "You are a helpful assistant who reviews an open-end answer.\n\n"
-                            "Task: Rank the options A, B, C, D, E from best match to worst match.\n"
+                            "Task: Rank the options from best match to worst match.\n"
                             "STRICT OUTPUT:\n"
-                            "Return a COMPLETE ranking of all options A, B, C, D, E.\n"
-                            "Format: A > B > C > D > E\n"
-                            "No explanation.\n\n"
+                            "Return EXACTLY one line.\n"
+                            "The line must contain ONLY the option letters shown in the meta-question, each EXACTLY ONCE.\n"
+                            "Use EXACTLY this separator: ' > '.\n"
+                            f"Output format MUST be exactly: {meta_cand_str}\n"
+                            "No explanation. No other text.\n\n"
                             "Agent's answer:\n"
                             f"{response.strip()}\n\n"
                             "FINAL RANKING:"
                         )
                         meta_rank_resp, meta_rank_trace = self.model.inference(meta_rank_prompt)
                         reasoning_trace.extend(meta_rank_trace)
-                        ranked_lists.append(self._extract_ranking_A_to_E(meta_rank_resp))
+                        ranked_lists.append(self._extract_ranking(meta_rank_resp, meta_candidates))
 
-                    winner, scores = self._mrrv_vote(ranked_lists)
+                    winner, scores = self._mrrv_vote(ranked_lists, meta_candidates)
                     prediction["choice"] = winner
                     return prediction, reasoning_trace
 
