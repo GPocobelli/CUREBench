@@ -935,7 +935,7 @@ class CompetitionKit:
                     strategy="mrrv",
                 )
 
-                self._log_ranking_vote_summary(
+                self._log_vote_summary(
                     prefix=f"[multi_choice id={example.get('id','?')}]",
                     winner=winner,
                     scores=scores,
@@ -1049,7 +1049,7 @@ class CompetitionKit:
                         strategy="mrrv",
                     )
 
-                    self._log_ranking_vote_summary(
+                    self._log_vote_summary(
                         prefix=f"[meta_vote id={example.get('id','?')}]",
                         winner=winner,
                         scores=scores,
