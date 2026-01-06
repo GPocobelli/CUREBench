@@ -765,6 +765,8 @@ class CompetitionKit:
         
         
         if question_type == "multi_choice":
+            candidates = self._extract_option_letters(question)  # z.B. ["A","B","C","D"]
+            cand_str = " > ".join(candidates)
             
             if method == "mrrv" and k_votes > 1:
                 ranked_lists: List[List[str]] = []
@@ -814,7 +816,7 @@ class CompetitionKit:
                 "The following is a multi_choice question.\n"
                 "You are a medical expert.\n\n"
                 "STRICT OUTPUT:\n"
-                "Return EXACTLY ONE LETTER: A, B, C, D, or E.\n"
+                f"Return EXACTLY ONE LETTER: {allowed}.\n"                
                 "No punctuation, no words, no explanation.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
