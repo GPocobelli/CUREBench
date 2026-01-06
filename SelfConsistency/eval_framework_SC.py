@@ -155,7 +155,7 @@ class LocalModel(BaseModel):
             # Tokenizer (local path)
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.model_name,
-                local_files_only=True
+                local_files_only=False,
             )
 
             model_kwargs = dict(
@@ -197,7 +197,7 @@ class LocalModel(BaseModel):
             # Model (local path)
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
-                local_files_only=True,
+                local_files_only=False,
                 **model_kwargs
             )
 
