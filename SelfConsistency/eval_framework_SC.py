@@ -29,6 +29,10 @@ from abc import ABC, abstractmethod
 import csv
 import re  # needed for fallback and existing extractor patterns
 from collections import Counter
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+import torch
+
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -329,8 +333,7 @@ class GPTOSS20BModel(BaseModel):
         self.developer_instructions = developer_instructions
 
     def load(self, **kwargs):
-        from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-        import torch
+        
         from openai_harmony import load_harmony_encoding, HarmonyEncodingName
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
