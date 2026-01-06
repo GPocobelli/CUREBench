@@ -246,25 +246,25 @@ class LocalModel(BaseModel):
 
     
             
-        gen_kwargs = dict(
-                max_new_tokens=max_tokens,
-                pad_token_id=pad_id, 
+        from transformers import GenerationConfig
+
+        do_sample = bool(temperature and temperature > 0)
+
+        gen_config = GenerationConfig(
+            max_new_tokens=max_tokens,
+            do_sample=do_sample,
+            temperature=float(temperature) if do_sample else None,
+            top_p=float(top_p) if do_sample else None,
+            top_k=int(top_k) if (do_sample and top_k is not None) else None,
+            pad_token_id=pad_id,
         )
 
-        if temperature and temperature > 0:
-            gen_kwargs.update(
-                dict(
-                    do_sample=True,
-                    temperature=temperature,
-                    top_p=top_p,
-                )
-            )
-            if top_k is not None:
-                gen_kwargs["top_k"] = int(top_k)
-        else:
-            gen_kwargs.update(dict(do_sample=False))
-
-        outputs = self.model.generate(input_ids, attention_mask=attention_mask, **gen_kwargs)
+        outputs = self.model.generate(
+            input_ids,
+            attention_mask=attention_mask,
+            generation_config=gen_config,
+        )
+        
         response = outputs[0][input_ids.shape[-1] :]
         response_text = self.tokenizer.decode(response, skip_special_tokens=True)
 
@@ -706,15 +706,15 @@ class CompetitionKit:
                 "The following is a multi_choice question with options.\n"
                 "You are a medical expert that answers multiple choice questions about medical knowledge.\n\n"
                 "INSTRUCTIONS:\n"
-                "- Return exactly one letter A, B, C, D, or E.\n"
-                "- Then provide the final answer in exactly this format, whereby you just chose one :\n" 
-                " The answer is: A, B, C, D or E.\n\n"
+                "- Think internally, but do not write your reasoning.\n"
+                "- Output EXACTLY one line in the following format:\n"
+                "ANSWER: <A|B|C|D|E>\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
                 "OPTIONS:\n"
                 f"{options_block}\n\n"
-                "Let's think step by step.\n"
-                "ANSWER:"
+                # "Let's think step by step.\n"
+                "ANSWER: "
             )
 
             
@@ -724,6 +724,12 @@ class CompetitionKit:
                 
                 choices = [self._extract_multiple_choice_answer(r) for r in responses]
                 final_choice = self._majority_vote(choices)
+                
+                # If everything failed, do a deterministic single run to recover
+                if not final_choice:
+                    r0, t0 = self.model.inference(prompt, temperature=0.0)
+                    final_choice = self._extract_multiple_choice_answer(r0)
+    
     
                 prediction["choice"] = final_choice if final_choice else ""
                 # store a representative string (optional): first response matching final_choice
@@ -773,8 +779,8 @@ class CompetitionKit:
                 "If unsure, state assumptions and missing information.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
-                "Let's think step by step.\n"
-                "ANSWER:"
+                # "Let's think step by step.\n"
+                "ANSWER: "
             )
             response, reasoning_trace = self.model.inference(prompt, temperature=0.0)
             prediction["choice"] = "NOTAVALUE"
@@ -801,8 +807,8 @@ class CompetitionKit:
                 f"{question}\n\n"
                 "OPTIONS:\n"
                 f"{options_block}\n\n"
-                "Let's think step by step.\n"
-                "ANSWER:"
+                # "Let's think step by step.\n"
+                "ANSWER: "
             )
 
             if self.sc_enabled:
@@ -810,7 +816,7 @@ class CompetitionKit:
                 responses, traces = self._sample_responses(prompt, self.sc_num_paths)
     
                 # If meta_question exists, we map each sampled response to a letter deterministically
-                if "meta_question" in example:
+                if example.get("meta_question"):
                     choices = []
                     meta_traces = []
     
@@ -821,17 +827,19 @@ class CompetitionKit:
                             "Given the agent answer below, choose the single best matching option.\n"
                             "Analyze it and choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n\n"
                             "If uncertain, pick the closest match.\n"
-                            "RULES:\n"
-                            "- Output MUST be exactly one character: A, B, C, D, or E.\n"
+                            "INSTRUCTIONS:\n"
+                            "- Think internally, but do not write your reasoning.\n"
+                            "- Output EXACTLY one line in the following format:\n"
+                            "ANSWER: <A|B|C|D|E>\n"
                             "- Do not output any other text.\n"
-                            "- No extra text.\n\n"
+                            "- No extra text.\n\n"                            
                             "QUESTION:\n"
                             f"{question}\n\n"
                             "OPTIONS:\n"
                             f"{options_block}\n\n"
                             "AGENT ANSWER:\n"
                             f"{r}\n\n"
-                            "OUTPUT:"
+                            "ANSWER: "
                         )
 
                         # mapping can be greedy (temperature=0) to reduce noise in the mapper
@@ -867,17 +875,41 @@ class CompetitionKit:
                     return prediction, reasoning_trace
     
                 # no meta_question: fall back to extracting choice directly from responses
-                choices = [self._extract_multiple_choice_answer(r) for r in responses]
+                choices = []
+                meta_traces = []
+
+                for r in responses:
+                    c, mt = self._map_open_answer_to_choice(
+                        question = question,
+                        options_block = options_block,
+                        agent_answer = r
+                    )
+                    choices.append(c)
+                    meta_traces.append(mt)
+
                 final_choice = self._majority_vote(choices)
                 prediction["choice"] = final_choice if final_choice else ""
-                prediction["open_ended_answer"] = responses[0] if responses else ""
+
+                # representative open answer whose mapped choice equals the final vote
+                rep = ""
+                for r, c in zip(responses, choices):
+                    if c == final_choice and r:
+                        rep = r
+                        break
+                prediction["open_ended_answer"] = rep or (responses[0] if responses else "")
+
                 reasoning_trace = {
                     "self_consistency": True,
                     "num_paths": self.sc_num_paths,
-                    "votes": dict(Counter(choices)),
+                    "votes": dict(Counter([c for c in choices if c])),
                     "samples": [
-                        {"response": r, "choice": c, "trace": t}
-                        for r, c, t in zip(responses, choices, traces)
+                        {
+                            "response": r,
+                            "mapped_choice": c,
+                            "trace": t,
+                            "meta_trace": mt,
+                        }
+                        for r, c, t, mt in zip(responses, choices, traces, meta_traces)
                     ],
                 }
                 return prediction, reasoning_trace
@@ -892,7 +924,7 @@ class CompetitionKit:
             response, reasoning_trace = self.model.inference(prompt, temperature=0.0)
             prediction["open_ended_answer"] = (response or "").strip()
 
-            if "meta_question" in example:
+            if example.get("meta_question"):
                 meta_prompt = (
                     f"{example['meta_question']}\n"
                     "You are a helpful assistant who reviews an open-end answer.\n\n"
@@ -900,11 +932,15 @@ class CompetitionKit:
                     "Analyze it and choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n\n"
                     "If uncertain, pick the closest match.\n"
                     "Let's think step by step.\n"
-                    "STRICT OUTPUT:\n"
-                    "Return exactly one letter A, B, C, D, or E.\n"
-                    "No extra text.\n\n"
+                    "INSTRUCTIONS:\n"
+                    "- Think internally, but do not write your reasoning.\n"
+                    "- Output EXACTLY one line in the following format:\n"
+                    "ANSWER: <A|B|C|D|E>\n"
+                    "- Do not output any other text.\n"
+                    "- No extra text.\n\n"   
                     "Agent's answer:\n"
                     f"{response.strip()}\n\n"
+                    "ANSWER: "
                 )
                 
                 meta_response, meta_reasoning = self.model.inference(meta_prompt, temperature=0.0)
@@ -916,8 +952,18 @@ class CompetitionKit:
                 choice = self._extract_multiple_choice_answer(meta_response)
                 prediction["choice"] = choice if choice else ""
             else:
-                choice = self._extract_multiple_choice_answer(response)
-                prediction["choice"] = choice if choice else ""
+                # No meta_question: map open response to A-E
+                mapped_choice, meta_reasoning = self._map_open_answer_to_choice(
+                    question=question,
+                    options_block=options_block,
+                    agent_answer=response.strip()
+                )
+                prediction["choice"] = mapped_choice if mapped_choice else ""
+
+                try:
+                    reasoning_trace = list(reasoning_trace) + list(meta_reasoning)
+                except Exception:
+                    pass
     
             return prediction, reasoning_trace
     
@@ -963,6 +1009,39 @@ class CompetitionKit:
 
 
 
+    def _map_open_answer_to_choice(
+        self,
+        question: str,
+        options_block: str,
+        agent_answer: str,
+    ) -> Tuple[str, Any]:
+        """
+        Maps an open-ended agent answer to one MC option letter A-E via a deterministic (temperature=0) LLM call.
+        Returns (choice_letter, mapper_trace).
+        """
+
+        mapper_prompt = (
+            "You are a strict multiple-choice answer mapper.\n\n"
+            "TASK:\n"
+            "Given QUESTION, OPTIONS, and an AGENT ANSWER (free text), choose the single best matching option.\n\n"
+            "RULES:\n"
+            "- Think internally, but do not write your reasoning.\n"
+            "- Output EXACTLY one line in this format:\n"
+            "  ANSWER: <A|B|C|D|E>\n"
+            "- Do not output any other text.\n\n"
+            "QUESTION:\n"
+            f"{question}\n\n"
+            "OPTIONS:\n"
+            f"{options_block}\n\n"
+            "AGENT ANSWER:\n"
+            f"{agent_answer}\n\n"
+            "ANSWER:"
+        )
+
+        mapper_resp, mapper_trace = self.model.inference(mapper_prompt, temperature=0.0)
+        mapped_choice = self._extract_multiple_choice_answer(mapper_resp)
+        return mapped_choice, mapper_trace
+
 
 
 
@@ -974,31 +1053,28 @@ class CompetitionKit:
 
 
     def _extract_multiple_choice_answer(self, response: str) -> str:
-        """Extract letter answer from model response"""
-        if not response or response is None:
+        if not response:
             return ""
+        s = response.strip().upper()
 
-        response = response.strip().upper()
+        m = re.search(r"\bANSWER:\s*([ABCDE])\b", s)
+        if m:
+            return m.group(1)
 
-        # Look for letter at the beginning
-        if response and response[0] in ['A', 'B', 'C', 'D', 'E']:
-            return response[0]
+        m = re.search(r"THE ANSWER IS:\s*([ABCDE])\b", s)
+        if m:
+            return m.group(1)
+        
+        m = re.search(r"\bOUTPUT:\s*([ABCDE])\b", s)
+        if m:
+            return m.group(1)
 
-        # Look for "The answer is X" patterns
-        import re
-        patterns = [
-            r"(?:answer is|answer:|is)\s*([ABCDE])",
-            r"([ABCDE])\)",
-            r"\b([ABCDE])\b"
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, response)
-            if match:
-                return match.group(1)
+        # Fallback: erste Zeile nur ein Buchstabe
+        first_line = s.splitlines()[0].strip()
+        if re.fullmatch(r"[ABCDE]", first_line):
+            return first_line
 
         return ""
-
 
 
 
