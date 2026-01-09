@@ -81,6 +81,20 @@ class BaseModel(ABC):
         pass
 
 
+
+
+
+
+
+
+
+
+
+
+# --------------------------------------------------------------------------------------------------------------------------------
+
+
+
 class ChatGPTModel(BaseModel):
     """ChatGPT/OpenAI model wrapper (OpenAI Platform key)"""
 
@@ -128,36 +142,9 @@ class ChatGPTModel(BaseModel):
         complete_messages = messages + [{"role": "assistant", "content": response}]
         return response, complete_messages
 
-# -----------------------------------------------------------------------------------------
-# Qwen
-
-# class LocalModel(BaseModel):
-#     """Local HuggingFace model wrapper"""
-
-#     def load(self, **kwargs):
-#         """Load local HuggingFace model"""
-#         try:
-#             from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-#             import torch
-
-#             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-#             self.model = AutoModelForCausalLM.from_pretrained(
-#                 self.model_name,
-#                 torch_dtype=torch.bfloat16,
-#                 device_map="auto",
-#                 quantization_config=BitsAndBytesConfig(load_in_8bit=True),  # ✅ FIX: add missing comma + keyword style
-#                 **kwargs
-#             )
-#             logger.info(f"Loaded local model: {self.model_name}")
-#         except ImportError as e:
-#             logger.error(f"Failed to import local model dependencies: {e}")
-#             raise
+# --------------------------------------------------------------------------------------------------------------------------------
 
 
-
-
-    # -----------------------------------------------------------------------------------------
-    # Llama
 
 class LocalModel(BaseModel):
     """Local HuggingFace model wrapper"""
@@ -237,10 +224,7 @@ class LocalModel(BaseModel):
         except ImportError as e:
             logger.error(f"Failed to import local model dependencies: {e}")
             raise
-
-
-
-    
+            
     def inference(self, prompt: str, max_tokens: int = 1024, **kwargs) -> Tuple[str, List[Dict]]:
         """Local model inference"""
         
@@ -289,14 +273,6 @@ class LocalModel(BaseModel):
         complete_messages = messages + [{"role": "assistant", "content": response_text}]
         return response_text, complete_messages
 
-
-
-
-
-
-
-
-
 class CustomModel(BaseModel):
     """Custom model wrapper for user-defined models"""
 
@@ -324,12 +300,6 @@ class CustomModel(BaseModel):
                 {"role": "assistant", "content": "Error occurred"}
             ]
             return "Error occurred", error_messages
-
-
-
-
-
-
 
 class GPTOSS20BModel(BaseModel):
     """GPT-OSS-20B wrapper"""
@@ -464,6 +434,26 @@ class GPTOSS20BModel(BaseModel):
         return final_response.strip(), reasoning_trace
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# --------------------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
 class CompetitionKit:
     """
     Simple competition framework - everything you need in one class!
@@ -524,6 +514,9 @@ class CompetitionKit:
             print("Not config found, existing.")
             exit(1)
 
+
+
+    
     def _detect_model_type(self, model_name: str) -> str:
         if "gpt-oss-20b" in model_name.lower():
             return "gpt-oss-20b"
@@ -532,6 +525,11 @@ class CompetitionKit:
         else:
             return "local"
 
+
+
+
+
+    
     def evaluate(self, dataset_name: str, subset_size: int = None) -> EvaluationResult:
         if not self.model:
             raise ValueError("No model loaded. Call load_model() first.")
@@ -613,6 +611,12 @@ class CompetitionKit:
 
         return result
 
+
+
+
+
+
+    
     def _load_dataset(self, dataset_config: Dict) -> List[Dict]:
         from dataset_utils import build_dataset
 
@@ -681,7 +685,13 @@ class CompetitionKit:
 
 
 
+# --------------------------------------------------------------------------------------------------------------------------------
 
+
+
+
+
+    
 
     def _extract_ranking(self, response: str, candidates: List[str]) -> List[str]:
         """
@@ -722,7 +732,8 @@ class CompetitionKit:
 
         return ranking[:len(candidates)]
 
-
+# --------------------------------------------------------------------------------------------------------------------------------
+# !!!
 
     def _mrrv_vote(self, ranked_lists: List[List[str]], candidates: List[str]) -> Tuple[str, Dict[str, float]]:
         """
@@ -765,7 +776,6 @@ class CompetitionKit:
         # Tie-break: höchste Score, dann alphabetisch
         winner = sorted(candidates, key=lambda c: (-scores[c], c))[0]
         return winner, scores
-
 
 
 
@@ -877,12 +887,12 @@ class CompetitionKit:
 
 
 
-    # =====================================================================
-    # FIXED: CoT-safe prompts + syntactically safe meta_prompt
-    # - Replaces _get_prediction_with_trace with CoT-safe prompts
-    # - Uses a syntactically safe meta_prompt (no triple-quote nesting)
-    # - Keeps _extract_multiple_choice_answer intact
-    # =====================================================================
+# --------------------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------------------------------------
+
+
+    
     def _get_prediction_with_trace(self, example: Dict) -> Tuple[Dict, List[Dict]]:
         """Get model prediction and reasoning trace for a single example"""
         question = example["question"]
