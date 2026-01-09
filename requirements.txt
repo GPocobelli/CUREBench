@@ -1,12 +1,15 @@
 langchain 
 wikipedia 
 langchain-community 
+langchain_core
 langchain-openai
 langchain-anthropic
 python-dotenv
 pydantic
 duckduckgo-search
-
+ddgs
+requests
+   
 
 
 bitsandbytes
@@ -26,4 +29,5 @@ scikit-learn>=1.0.0  # For additional metrics (optional)
 # Development dependencies (optional)
 jupyter>=1.0.0
 matplotlib>=3.5.0
+
 seaborn>=0.11.0
