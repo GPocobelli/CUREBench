@@ -72,42 +72,36 @@ class BaseModel(ABC):
 
 
 class ChatGPTModel(BaseModel):
-    """ChatGPT/OpenAI model wrapper"""
+    """ChatGPT/OpenAI model wrapper (OpenAI Platform key)"""
 
     def load(self, **kwargs):
-        """Load ChatGPT model"""
-
-        api_key = os.getenv("AZURE_OPENAI_API_KEY_O1")
-        api_version = "2024-12-01-preview"  # "2025-03-01-preview"
-
+        api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise ValueError("API key not found in environment. Please set the appropriate environment variable.")
+            raise ValueError("OPENAI_API_KEY is not set.")
 
-        azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        from openai import OpenAI
+        self.model_client = OpenAI(api_key=api_key)
 
-        from openai import AzureOpenAI
-        print("Initializing AzureOpenAI client with endpoint:", azure_endpoint)
-        print("Using API version:", api_version)
-        self.model_client = AzureOpenAI(
-            azure_endpoint=azure_endpoint,
-            api_key=api_key,
-            api_version=api_version,
-        )
-
-    def inference(self, prompt: str, max_tokens: int = 1024) -> Tuple[str, List[Dict]]:
-        """ChatGPT inference"""
+    def inference(
+        self,
+        prompt: str,
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        top_k: Optional[int] = None,  # not supported here; kept for compatibility
+    ) -> Tuple[str, List[Dict]]:
         messages = [{"role": "user", "content": prompt}]
 
-        responses = self.model_client.chat.completions.create(
-            model=self.model_name,
+        resp = self.model_client.chat.completions.create(
+            model=self.model_name,              # z.B. "gpt-4o-mini"
             messages=messages,
-            max_completion_tokens=8192,
+            max_tokens=max_tokens,              # OpenAI Chat Completions
+            temperature=temperature,
+            top_p=top_p,
         )
-        response = responses.choices[0].message.content
 
-        # Create complete conversation history
+        response = resp.choices[0].message.content or ""
         complete_messages = messages + [{"role": "assistant", "content": response}]
-
         return response, complete_messages
 
 # -----------------------------------------------------------------------------------------
@@ -603,6 +597,19 @@ class CompetitionKit:
 
         return dataset_list
 
+
+
+
+    def _format_options_block(self, options: Dict[str, str]) -> str:
+        """Format options deterministically as in classic MCQ prompts."""
+        if not options:
+            return ""
+        letters = [k for k in ["A", "B", "C", "D", "E"] if k in options]
+        return "\n".join([f"{k}. {options[k]}" for k in letters])
+    
+
+
+
     # =====================================================================
     # FIXED: CoT-safe prompts + syntactically safe meta_prompt
     # - Replaces _get_prediction_with_trace with CoT-safe prompts
@@ -615,25 +622,25 @@ class CompetitionKit:
         question_type = example["question_type"]
 
         if question_type == "multi_choice":
+            options_block = self._format_options_block(example.get("options") or {})
+
             prompt = (
-                "The following is a multi_choice question.\n"
-                "You are a medical expert.\n\n"
-                "REASONING (internal):\n"
-                "Before answering, let's think step by step and break it down into sub-problems.\n"
-                "STRICT OUTPUT:\n"
-                "Return EXACTLY ONE LETTER: A, B, C, D, or E.\n"
-                "No punctuation, no words, no explanation.\n\n"
+                "The following is a multi_choice question with options.\n"
+                "You are a medical expert that answers multiple choice questions about medical knowledge.\n\n"
+                "INSTRUCTIONS:\n"                
+                "- Output EXACTLY one line in the following format:\n"
+                "ANSWER: <A|B|C|D|E>\n"
+                "- Let's think step by step internally. Do not write your reasoning.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
-                "FINAL ANSWER (one letter only):"
+                "OPTIONS:\n"
+                f"{options_block}\n\n"
+                "ANSWER: "
             )
-
         elif question_type == "open_ended":
             prompt = (
                 "The following is a open_ended question.\n"
                 "You are a medical expert.\n\n"
-                "REASONING (internal):\n"
-                "Before answering, let's think step by step and break it down into sub-problems.\n"
                 "OUTPUT FORMAT:\n"
                 "1) Recommendation (1–3 sentences)\n"
                 "2) Key rationale (3–5 bullet points)\n"
@@ -641,21 +648,25 @@ class CompetitionKit:
                 "If unsure, state assumptions and missing information.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
+                "Let's think step by step internally. Do not write your reasoning. Output only one letter.\n\n"
                 "ANSWER:"
             )
 
         elif question_type == "open_ended_multi_choice":
+            options_block = self._format_options_block(example.get("options") or {})
+
             prompt = (
-                "The following is a open_ended_multi_choice question.\n"
-                "You are a medical expert.\n\n"
-                "REASONING (internal):\n"
-                "Before answering, let's think step by step and break it down into sub-problems.\n"
-                "OUTPUT FORMAT:\n"
+                "The following is a open_ended_multi_choice question with options.\n"
+                "You are a medical expert that answers open-end questions about medical knowledge.\n\n"
+                "INSTRUCTIONS:\n"
                 "- Answer in 1-3 bullet points.\n"
-                "Each bullet MUST include concrete identifiers from the options (drug names, regimen, placebo vs active).\n"
-                "- Do NOT mention option letters (A–E) in this step.\n\n"
+                "- Each bullet MUST include concrete identifiers from the options (e.g. drug names, regimen, placebo vs active).\n"
+                "- Let's think step by step internally. Do not write your reasoning. Output only one letter.\n\n"                
+                "- Do NOT mention option letters (A, B, C, D, or E) in this step.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
+                "OPTIONS:\n"
+                f"{options_block}\n\n"
                 "ANSWER (bullets):"
             )
 
@@ -680,13 +691,19 @@ class CompetitionKit:
                     "You are a helpful assistant who reviews an open-end answer.\n\n"
                     "Analyze it and choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n\n"
                     "If uncertain, pick the closest match.\n"
-                    "Let's think step by step.\n"
-                    "STRICT OUTPUT:\n"
-                    "Return exactly one letter A, B, C, D, or E.\n"
-                    "No explanation.\n\n"
-                    "Agent's answer:\n"
+                    "The following is a multi_choice question with options.\n"
+                    "INSTRUCTIONS:\n"
+                    "- Think internally, but do not write your reasoning.\n"
+                    "- Output EXACTLY one line in the following format:\n"
+                    "ANSWER: <A|B|C|D|E>\n"
+                    "- Do not output any other text.\n\n"
+                    "QUESTION:\n"
+                    f"{question}\n\n"
+                    "OPTIONS:\n"
+                    f"{options_block}\n\n"
+                    "AGENT ANSWER:\n"
                     f"{response.strip()}\n\n"
-                    "FINAL ANSWER (one letter only):"
+                    "Answer: "
                 )
                 meta_response, meta_reasoning = self.model.inference(meta_prompt)
                 reasoning_trace += meta_reasoning
@@ -702,29 +719,34 @@ class CompetitionKit:
 
         return prediction, reasoning_trace
 
+
+
+
+
+
+
+
     def _extract_multiple_choice_answer(self, response: str) -> str:
-        """Extract letter answer from model response"""
-        if not response or response is None:
+        if not response:
             return ""
+        s = response.strip().upper()
 
-        response = response.strip().upper()
+        m = re.search(r"\bANSWER:\s*([ABCDE])\b", s)
+        if m:
+            return m.group(1)
 
-        # Look for letter at the beginning
-        if response and response[0] in ['A', 'B', 'C', 'D', 'E']:
-            return response[0]
+        m = re.search(r"THE ANSWER IS:\s*([ABCDE])\b", s)
+        if m:
+            return m.group(1)
+        
+        m = re.search(r"\bOUTPUT:\s*([ABCDE])\b", s)
+        if m:
+            return m.group(1)
 
-        # Look for "The answer is X" patterns
-        import re
-        patterns = [
-            r"(?:answer is|answer:|is)\s*([ABCDE])",
-            r"([ABCDE])\)",
-            r"\b([ABCDE])\b"
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, response)
-            if match:
-                return match.group(1)
+        # Fallback: erste Zeile nur ein Buchstabe
+        first_line = s.splitlines()[0].strip()
+        if re.fullmatch(r"[ABCDE]", first_line):
+            return first_line
 
         return ""
 
