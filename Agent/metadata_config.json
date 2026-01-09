@@ -1,4 +1,4 @@
-{
+{ 
   "metadata": {
     "model_name": "gpt-4o-mini",
     "model_type": "LangChainAgentModel",
