@@ -20,7 +20,7 @@
     "top_p": 0.9
   }, 
   "self_consistency": {
-    "enabled": true,
+    "enabled": false,
     "num_paths": 10,
     "temperature": 0.7,
     "top_k": 40,
