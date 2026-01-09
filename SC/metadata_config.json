@@ -6,7 +6,7 @@
     "base_model_type": "API",
     "base_model_name": "gpt-4o-mini",
     "dataset": "cure_bench_pharse_1",
-    "additional_info": "Submission using MRR tool"
+    "additional_info": "Submission using SC tool"
   },
   "dataset": {
     "dataset_name": "cure_bench_pharse_1",
