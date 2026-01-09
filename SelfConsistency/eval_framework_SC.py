@@ -84,26 +84,15 @@ class BaseModel(ABC):
 
 
 class ChatGPTModel(BaseModel):
-    """ChatGPT/OpenAI model wrapper"""
+    """ChatGPT/OpenAI model wrapper (OpenAI Platform key)"""
 
     def load(self, **kwargs):
-        api_key = os.getenv("AZURE_OPENAI_API_KEY_O1")
-        api_version = "2024-12-01-preview"
-
+        api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise ValueError("API key not found in environment. Please set the appropriate environment variable.")
+            raise ValueError("OPENAI_API_KEY is not set.")
 
-        azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-
-        from openai import AzureOpenAI
-        logger.info(f"Initializing AzureOpenAI client with endpoint: {azure_endpoint}")
-        logger.info(f"Using API version: {api_version}")
-
-        self.model_client = AzureOpenAI(
-            azure_endpoint=azure_endpoint,
-            api_key=api_key,
-            api_version=api_version,
-        )
+        from openai import OpenAI
+        self.model_client = OpenAI(api_key=api_key)
 
     def inference(
         self,
@@ -111,17 +100,19 @@ class ChatGPTModel(BaseModel):
         max_tokens: int = 1024,
         temperature: float = 0.0,
         top_p: float = 1.0,
-        top_k: Optional[int] = None,  # Azure chat.completions doesn't support top_k; kept for API compatibility
+        top_k: Optional[int] = None,  # not supported here; kept for compatibility
     ) -> Tuple[str, List[Dict]]:
         messages = [{"role": "user", "content": prompt}]
-        responses = self.model_client.chat.completions.create(
-            model=self.model_name,
+
+        resp = self.model_client.chat.completions.create(
+            model=self.model_name,              # z.B. "gpt-4o-mini"
             messages=messages,
-            max_completion_tokens=max_tokens,  # FIX: respect caller's max_tokens
+            max_tokens=max_tokens,              # OpenAI Chat Completions
             temperature=temperature,
             top_p=top_p,
         )
-        response = responses.choices[0].message.content or ""
+
+        response = resp.choices[0].message.content or ""
         complete_messages = messages + [{"role": "assistant", "content": response}]
         return response, complete_messages
 
@@ -619,48 +610,27 @@ class CompetitionKit:
 
     def _load_dataset(self, dataset_config: Dict) -> List[Dict]:
         from dataset_utils import build_dataset
-        from torch.utils.data import DataLoader
 
-        dataset = build_dataset(
-            dataset_config.get("dataset_path"),
-        )
-
-        dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+        dataset = build_dataset(dataset_config.get("dataset_path"))
         dataset_list = []
 
-        for batch in dataloader:
-            question_type = batch[0][0]
+        for i in range(len(dataset)):
+            question_type, id_value, question, answer, meta_question, options = dataset[i]
 
-            # batch layout after dataset_utils change:
-            # 0: question_type, 1: id, 2: question, 3: answer, 4: meta_question, 5: options
-            options = batch[5][0] if len(batch) > 5 else None
+            ex = {
+                "question_type": question_type,
+                "id": id_value,
+                "question": question,
+                "answer": answer,
+            }
 
-            if question_type == "multi_choice":
-                dataset_list.append({
-                    "question_type": batch[0][0],
-                    "id": batch[1][0],
-                    "question": batch[2][0],
-                    "answer": batch[3][0],
-                    "options": options,  # <-- NEW
-                })
+            if question_type in ["multi_choice", "open_ended_multi_choice"]:
+                ex["options"] = options  # dict oder None
 
-            elif question_type == "open_ended_multi_choice":
-                dataset_list.append({
-                    "question_type": batch[0][0],
-                    "id": batch[1][0],
-                    "question": batch[2][0],
-                    "answer": batch[3][0],
-                    "meta_question": batch[4][0],
-                    "options": options,  # <-- NEW
-                })
+            if question_type == "open_ended_multi_choice":
+                ex["meta_question"] = meta_question
 
-            elif question_type == "open_ended":
-                dataset_list.append({
-                    "question_type": batch[0][0],
-                    "id": batch[1][0],
-                    "question": batch[2][0],
-                    "answer": batch[3][0],
-                })
+            dataset_list.append(ex)
 
         return dataset_list
 
