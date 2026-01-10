@@ -43,6 +43,14 @@ logger = logging.getLogger(__name__)
 
 
 
+def polite_sleep(base_delay=5.0, jitter=2.0, peak_multiplier=1.0):
+    """
+    Sleep base_delay seconds + random jitter in [0,jitter].
+    peak_multiplier lets you slow down further if site looks stressed.
+    """
+    wait = max(0.01, base_delay * peak_multiplier) + random.uniform(0, jitter)
+    return wait
+
 
 @dataclass
 class EvaluationResult:
@@ -104,7 +112,9 @@ class ChatGPTModel(BaseModel):
         top_p: float = 0.8,
         top_k: Optional[int] = None,  # not supported here; kept for compatibility
     ) -> Tuple[str, List[Dict]]:
-        time.sleep(random.uniform(0.05, 0.25))
+        
+        time.sleep(polite_sleep(base_delay=5.0, jitter=2.0))
+        
         messages = [
             {"role": "user", "content": prompt},
         ]
