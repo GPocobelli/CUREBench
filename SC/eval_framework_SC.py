@@ -23,20 +23,25 @@ import sys
 import logging
 import argparse
 from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from tqdm import tqdm
 from abc import ABC, abstractmethod
-import csv
+import time, random
 import re  # needed for fallback and existing extractor patterns
-from collections import Counter
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-import torch
-
-
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def polite_sleep(base_delay=5.0, jitter=2.0, peak_multiplier=1.0):
+    """
+    Sleep base_delay seconds + random jitter in [0,jitter].
+    peak_multiplier lets you slow down further if site looks stressed.
+    """
+    wait = max(0.01, base_delay * peak_multiplier) + random.uniform(0, jitter)
+    return wait
+
 
 
 @dataclass
@@ -67,14 +72,7 @@ class BaseModel(ABC):
         pass
 
     @abstractmethod
-    def inference(
-    self,
-    prompt: str,
-    max_tokens: int = 1024,
-    temperature: float = 0.0,      # added
-    top_p: float = 1.0,            # added
-    top_k: Optional[int] = None,   # added
-) -> Tuple[str, List[Dict]]:
+    def inference(self, prompt: str, max_tokens: int = 1024) -> Tuple[str, List[Dict]]:
         """Run inference on the model
 
         Returns:
@@ -102,6 +100,9 @@ class ChatGPTModel(BaseModel):
         top_p: float = 1.0,
         top_k: Optional[int] = None,  # not supported here; kept for compatibility
     ) -> Tuple[str, List[Dict]]:
+        
+        time.sleep(polite_sleep(base_delay=5.0, jitter=2.0))
+
         messages = [{"role": "user", "content": prompt}]
 
         resp = self.model_client.chat.completions.create(
@@ -116,10 +117,36 @@ class ChatGPTModel(BaseModel):
         complete_messages = messages + [{"role": "assistant", "content": response}]
         return response, complete_messages
 
-
 # -----------------------------------------------------------------------------------------
 # Qwen
 
+# class LocalModel(BaseModel):
+#     """Local HuggingFace model wrapper"""
+
+#     def load(self, **kwargs):
+#         """Load local HuggingFace model"""
+#         try:
+#             from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+#             import torch
+
+#             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+#             self.model = AutoModelForCausalLM.from_pretrained(
+#                 self.model_name,
+#                 torch_dtype=torch.bfloat16,
+#                 device_map="auto",
+#                 quantization_config=BitsAndBytesConfig(load_in_8bit=True),  # ✅ FIX: add missing comma + keyword style
+#                 **kwargs
+#             )
+#             logger.info(f"Loaded local model: {self.model_name}")
+#         except ImportError as e:
+#             logger.error(f"Failed to import local model dependencies: {e}")
+#             raise
+
+
+
+
+    # -----------------------------------------------------------------------------------------
+    # Llama
 
 class LocalModel(BaseModel):
     """Local HuggingFace model wrapper"""
@@ -145,8 +172,7 @@ class LocalModel(BaseModel):
 
             # Tokenizer (local path)
             self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_name,
-                local_files_only=False,
+                self.model_name
             )
 
             model_kwargs = dict(
@@ -201,78 +227,44 @@ class LocalModel(BaseModel):
             logger.error(f"Failed to import local model dependencies: {e}")
             raise
 
-    def inference(
-        self,
-        prompt: str,
-        max_tokens: int = 1024,
-        temperature: float = 0.0,
-        top_p: float = 1.0,
-        top_k: Optional[int] = None,
-    ):
-        messages = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": prompt},
-        ]
 
-        # Some tokenizers don't support enable_thinking; fall back gracefully.
-        try:
-            input_ids = self.tokenizer.apply_chat_template(
-                messages,
-                add_generation_prompt=True,
-                return_tensors="pt",
-                enable_thinking=False,
-            ).to(self.model.device)
-        
-        except TypeError:
-            input_ids = self.tokenizer.apply_chat_template(
-                messages,
-                add_generation_prompt=True,
-                return_tensors="pt",
-            ).to(self.model.device)
 
-        # Robust padding + attention mask
-        # Ensure we always have pad_token_id and attention_mask defined.
-        if self.tokenizer.pad_token_id is None:
-            # common safe fallback for decoder-only LMs
-            self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        pad_id = self.tokenizer.pad_token_id
-        attention_mask = (input_ids != pad_id).long()
+
+
+
 
     
-            
-        from transformers import GenerationConfig
+    def inference(self, prompt: str, max_tokens: int = 1024) -> Tuple[str, List[Dict]]:
+        """Local model inference"""
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt}
+        ]
 
-        do_sample = bool(temperature and temperature > 0)
+        print("messages:", messages)
 
-        gen_config = GenerationConfig(
-            max_new_tokens=max_tokens,
-            do_sample=do_sample,
-            temperature=float(temperature) if do_sample else None,
-            top_p=float(top_p) if do_sample else None,
-            top_k=int(top_k) if (do_sample and top_k is not None) else None,
-            pad_token_id=pad_id,
-        )
+        input_ids = self.tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, return_tensors='pt', enable_thinking=False
+        ).to(self.model.device)
 
         outputs = self.model.generate(
             input_ids,
-            attention_mask=attention_mask,
-            generation_config=gen_config,
+            temperature=0.4,
+            top_p=0.9,
+            max_new_tokens=max_tokens,
+            pad_token_id=self.tokenizer.eos_token_id,
+            do_sample=False
         )
-        
-        response = outputs[0][input_ids.shape[-1] :]
+
+        response = outputs[0][input_ids.shape[-1]:]
         response_text = self.tokenizer.decode(response, skip_special_tokens=True)
+        print("response_text:", response_text)
 
+        # Create complete conversation history
         complete_messages = messages + [{"role": "assistant", "content": response_text}]
+
         return response_text, complete_messages
-
-
-
-
-
-
-
-
 
 
 class CustomModel(BaseModel):
@@ -324,7 +316,8 @@ class GPTOSS20BModel(BaseModel):
         self.developer_instructions = developer_instructions
 
     def load(self, **kwargs):
-        
+        from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+        import torch
         from openai_harmony import load_harmony_encoding, HarmonyEncodingName
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
@@ -435,23 +428,6 @@ class GPTOSS20BModel(BaseModel):
         return final_response.strip(), reasoning_trace
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 class CompetitionKit:
     """
     Simple competition framework - everything you need in one class!
@@ -463,19 +439,10 @@ class CompetitionKit:
 
         self.config = json.load(open(config_path, 'r')) if config_path else {}
 
-        self.self_consistency = self.config.get("self_consistency", {})
-        self.sc_enabled = bool(self.self_consistency.get("enabled", False))
-        self.sc_num_paths = int(self.self_consistency.get("num_paths", 5))
-        self.sc_temperature = float(self.self_consistency.get("temperature", 0.7))
-        self.sc_top_k = self.self_consistency.get("top_k", 40)  # can be None
-        self.sc_top_p = float(self.self_consistency.get("top_p", 1.0))
-
         self.output_dir = self.config.get('output_dir', 'results')
         os.makedirs(self.output_dir, exist_ok=True)
 
         self.datasets = self._load_dataset_configs(self.config)
-
-
 
     def load_model(self, model_name: str, model_type: str = "auto", **kwargs):
         self.model_name = model_name
@@ -557,10 +524,6 @@ class CompetitionKit:
                 question_type = example["question_type"]
                 expected_answer = example.get("answer")
                 print("expected_answer:", expected_answer)
-                print("predicted_choice:", prediction.get("choice", ""))
-                # optional:
-                print("predicted_text_head:", (prediction.get("open_ended_answer", "") or "")[:120])
-
 
                 if question_type == "multi_choice" or question_type == "open_ended_multi_choice":
                     if expected_answer != '':
@@ -610,39 +573,42 @@ class CompetitionKit:
 
     def _load_dataset(self, dataset_config: Dict) -> List[Dict]:
         from dataset_utils import build_dataset
+        from torch.utils.data import DataLoader
 
-        dataset = build_dataset(dataset_config.get("dataset_path"))
+        dataset = build_dataset(
+            dataset_config.get("dataset_path"),
+        )
+
+        dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
         dataset_list = []
 
-        for i in range(len(dataset)):
-            question_type, id_value, question, answer, meta_question, options = dataset[i]
+        for batch in dataloader:
+            question_type = batch[0][0]
 
-            ex = {
-                "question_type": question_type,
-                "id": id_value,
-                "question": question,
-                "answer": answer,
-            }
-
-            if question_type in ["multi_choice", "open_ended_multi_choice"]:
-                ex["options"] = options  # dict oder None
-
-            if question_type == "open_ended_multi_choice":
-                ex["meta_question"] = meta_question
-
-            dataset_list.append(ex)
+            if question_type == "multi_choice":
+                dataset_list.append({
+                    "question_type": batch[0][0],
+                    "id": batch[1][0],
+                    "question": batch[2][0],
+                    "answer": batch[3][0],
+                })
+            elif question_type == "open_ended_multi_choice":
+                dataset_list.append({
+                    "question_type": batch[0][0],
+                    "id": batch[1][0],
+                    "question": batch[2][0],
+                    "answer": batch[3][0],
+                    "meta_question": batch[4][0],
+                })
+            elif question_type == "open_ended":
+                dataset_list.append({
+                    "question_type": batch[0][0],
+                    "id": batch[1][0],
+                    "question": batch[2][0],
+                    "answer": batch[3][0],
+                })
 
         return dataset_list
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -654,6 +620,9 @@ class CompetitionKit:
         letters = [k for k in ["A", "B", "C", "D", "E"] if k in options]
         return "\n".join([f"{k}. {options[k]}" for k in letters])
     
+
+
+
     # =====================================================================
     # FIXED: CoT-safe prompts + syntactically safe meta_prompt
     # - Replaces _get_prediction_with_trace with CoT-safe prompts
@@ -662,89 +631,29 @@ class CompetitionKit:
     # =====================================================================
     def _get_prediction_with_trace(self, example: Dict) -> Tuple[Dict, str]:
         """Get model prediction and reasoning trace for a single example"""
-        prediction = {"choice": "", "open_ended_answer": ""}
         question = example["question"]
         question_type = example["question_type"]
 
-
-
-        # ------------------------------------------------------------------------------------
-        # multi_choice
-        # ------------------------------------------------------------------------------------
-        
         if question_type == "multi_choice":
             options_block = self._format_options_block(example.get("options") or {})
 
             prompt = (
                 "The following is a multi_choice question with options.\n"
                 "You are a medical expert that answers multiple choice questions about medical knowledge.\n\n"
-                "INSTRUCTIONS:\n"
-                #"- Think internally, but do not write your reasoning.\n"
+                "INSTRUCTIONS:\n"                
                 "- Output EXACTLY one line in the following format:\n"
-                "ANSWER: <A|B|C|D|E>\n\n"
+                "ANSWER: <A|B|C|D|E>\n"
+                "- Let's think step by step internally. Do not write your reasoning.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
                 "OPTIONS:\n"
                 f"{options_block}\n\n"
-                # "Let's think step by step.\n"
                 "ANSWER: "
             )
-
-            
-            if self.sc_enabled:
-               # Self-Consistency: sample multiple reasoning paths, then majority vote on final answers.
-                responses, traces = self._sample_responses(prompt, self.sc_num_paths)
-                
-                choices = [self._extract_multiple_choice_answer(r) for r in responses]
-                final_choice = self._majority_vote(choices)
-                
-                # If everything failed, do a deterministic single run to recover
-                if not final_choice:
-                    r0, t0 = self.model.inference(prompt, temperature=0.0)
-                    final_choice = self._extract_multiple_choice_answer(r0)
-    
-    
-                prediction["choice"] = final_choice if final_choice else ""
-                # store a representative string (optional): first response matching final_choice
-                rep = ""
-                
-                for r, c in zip(responses, choices):
-                    if c == final_choice and r:
-                        rep = r
-                        break
-                prediction["open_ended_answer"] = rep or (responses[0] if responses else "")
-    
-                reasoning_trace = {
-                    "self_consistency": True,
-                    "num_paths": self.sc_num_paths,
-                    "votes": dict(Counter(choices)),
-                    "samples": [
-                        {"response": r, "choice": c, "trace": t}
-                        for r, c, t in zip(responses, choices, traces)
-                    ],
-                }
-                return prediction, reasoning_trace
-    
-            # --- fallback: single decode (your current behavior) ---
-            response, reasoning_trace = self.model.inference(prompt, temperature=0.0)
-            choice = self._extract_multiple_choice_answer(response)
-            prediction["choice"] = choice if choice else ""
-            prediction["open_ended_answer"] = (response or "").strip()
-            return prediction, reasoning_trace
-
-
-
-
-
-        
-        # ------------------------------------------------------------------------------------
-        # OPEN-ENDED 
-        # ------------------------------------------------------------------------------------
-    
         elif question_type == "open_ended":
             prompt = (
                 "The following is a open_ended question.\n"
-                "You are a medical expert that answers open-end questions about medical knowledge.\n\n"
+                "You are a medical expert.\n\n"
                 "OUTPUT FORMAT:\n"
                 "1) Recommendation (1–3 sentences)\n"
                 "2) Key rationale (3–5 bullet points)\n"
@@ -752,271 +661,76 @@ class CompetitionKit:
                 "If unsure, state assumptions and missing information.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
-                # "Let's think step by step.\n"
-                "ANSWER: "
+                "Let's think step by step internally. Do not write your reasoning. Output only one letter.\n\n"
+                "ANSWER:"
             )
-            response, reasoning_trace = self.model.inference(prompt, temperature=0.0)
-            prediction["choice"] = "NOTAVALUE"
-            prediction["open_ended_answer"] = (response or "").strip()
-            return prediction, reasoning_trace
 
-
-
-        
-        # ------------------------------------------------------------------------------------
-        # open_ended_multi_choice 
-        # ------------------------------------------------------------------------------------
-        
         elif question_type == "open_ended_multi_choice":
             options_block = self._format_options_block(example.get("options") or {})
+
             prompt = (
                 "The following is a open_ended_multi_choice question with options.\n"
                 "You are a medical expert that answers open-end questions about medical knowledge.\n\n"
                 "INSTRUCTIONS:\n"
                 "- Answer in 1-3 bullet points.\n"
                 "- Each bullet MUST include concrete identifiers from the options (e.g. drug names, regimen, placebo vs active).\n"
+                "- Let's think step by step internally. Do not write your reasoning. Output only one letter.\n\n"                
                 "- Do NOT mention option letters (A, B, C, D, or E) in this step.\n\n"
                 "QUESTION:\n"
                 f"{question}\n\n"
                 "OPTIONS:\n"
                 f"{options_block}\n\n"
-                # "Let's think step by step.\n"
-                "ANSWER: "
+                "ANSWER (bullets):"
             )
 
-            if self.sc_enabled:
-                # sample diverse agent answers
-                responses, traces = self._sample_responses(prompt, self.sc_num_paths)
-    
-                # If meta_question exists, we map each sampled response to a letter deterministically
-                if example.get("meta_question"):
-                    choices = []
-                    meta_traces = []
-    
-                    for r in responses:
-                        meta_prompt = (
-                            f"{example['meta_question']}\n"
-                            "You are a helpful assistant who reviews an open-end answer.\n\n"
-                            "Given the agent answer below, choose the single best matching option.\n"
-                            "Analyze it and choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n\n"
-                            "If uncertain, pick the closest match.\n"
-                            "INSTRUCTIONS:\n"
-                            #"- Think internally, but do not write your reasoning.\n"
-                            "- Output EXACTLY one line in the following format:\n"
-                            "ANSWER: <A|B|C|D|E>\n"
-                            "- Do not output any other text.\n"
-                            "- No extra text.\n\n"                            
-                            "QUESTION:\n"
-                            f"{question}\n\n"
-                            "OPTIONS:\n"
-                            f"{options_block}\n\n"
-                            "AGENT ANSWER:\n"
-                            f"{r}\n\n"
-                            "ANSWER: "
-                        )
+        else:
+            raise ValueError(f"Unsupported question type: {question_type}")
 
-                        # mapping can be greedy (temperature=0) to reduce noise in the mapper
-                        mr, mt = self.model.inference(meta_prompt, temperature=0.0)
-                        meta_traces.append(mt)
-                        choices.append(self._extract_multiple_choice_answer(mr))
-    
-                    final_choice = self._majority_vote(choices)
-                    prediction["choice"] = final_choice if final_choice else ""
-    
-                    # representative open answer whose mapped choice equals the final vote
-                    rep = ""
-                    for r, c in zip(responses, choices):
-                        if c == final_choice and r:
-                            rep = r
-                            break
-                    prediction["open_ended_answer"] = rep or (responses[0] if responses else "")
-    
-                    reasoning_trace = {
-                        "self_consistency": True,
-                        "num_paths": self.sc_num_paths,
-                        "votes": dict(Counter(choices)),
-                        "samples": [
-                            {
-                                "response": r,
-                                "mapped_choice": c,
-                                "trace": t,
-                                "meta_trace": mt,
-                            }
-                            for r, c, t, mt in zip(responses, choices, traces, meta_traces)
-                        ],
-                    }
-                    return prediction, reasoning_trace
-    
-                # no meta_question: fall back to extracting choice directly from responses
-                choices = []
-                meta_traces = []
+        response, reasoning_trace = self.model.inference(prompt)
 
-                for r in responses:
-                    c, mt = self._map_open_answer_to_choice(
-                        question = question,
-                        options_block = options_block,
-                        agent_answer = r
-                    )
-                    choices.append(c)
-                    meta_traces.append(mt)
+        prediction = {"choice": "", "open_ended_answer": ""}
 
-                final_choice = self._majority_vote(choices)
-                prediction["choice"] = final_choice if final_choice else ""
+        if question_type == "multi_choice":
+            choice = self._extract_multiple_choice_answer(response)
+            prediction["choice"] = choice if choice else ""
+            prediction["open_ended_answer"] = response.strip()
 
-                # representative open answer whose mapped choice equals the final vote
-                rep = ""
-                for r, c in zip(responses, choices):
-                    if c == final_choice and r:
-                        rep = r
-                        break
-                prediction["open_ended_answer"] = rep or (responses[0] if responses else "")
+        elif question_type == "open_ended_multi_choice":
+            prediction["open_ended_answer"] = response.strip()
 
-                reasoning_trace = {
-                    "self_consistency": True,
-                    "num_paths": self.sc_num_paths,
-                    "votes": dict(Counter([c for c in choices if c])),
-                    "samples": [
-                        {
-                            "response": r,
-                            "mapped_choice": c,
-                            "trace": t,
-                            "meta_trace": mt,
-                        }
-                        for r, c, t, mt in zip(responses, choices, traces, meta_traces)
-                    ],
-                }
-                return prediction, reasoning_trace
-    
-    
-    
-    
-    
-    
-    
-            # --- fallback single decode (your current behavior) ---
-            response, reasoning_trace = self.model.inference(prompt, temperature=0.0)
-            prediction["open_ended_answer"] = (response or "").strip()
-
-            if example.get("meta_question"):
+            if "meta_question" in example:
                 meta_prompt = (
                     f"{example['meta_question']}\n"
                     "You are a helpful assistant who reviews an open-end answer.\n\n"
-                    "Given the agent answer below, choose the single best matching option.\n"
                     "Analyze it and choose the single option (A, B, C, D, or E) whose text best matches the agent answer.\n\n"
                     "If uncertain, pick the closest match.\n"
-                    "Let's think step by step.\n"
+                    "The following is a multi_choice question with options.\n"
                     "INSTRUCTIONS:\n"
-                    #"- Think internally, but do not write your reasoning.\n"
+                    "- Think internally, but do not write your reasoning.\n"
                     "- Output EXACTLY one line in the following format:\n"
                     "ANSWER: <A|B|C|D|E>\n"
-                    "- Do not output any other text.\n"
-                    "- No extra text.\n\n"   
-                    "Agent's answer:\n"
+                    "- Do not output any other text.\n\n"
+                    "QUESTION:\n"
+                    f"{question}\n\n"
+                    "OPTIONS:\n"
+                    f"{options_block}\n\n"
+                    "AGENT ANSWER:\n"
                     f"{response.strip()}\n\n"
-                    "ANSWER: "
+                    "Answer: "
                 )
-                
-                meta_response, meta_reasoning = self.model.inference(meta_prompt, temperature=0.0)
-                # Keep traces separate but concatenate for compatibility with your existing storage
-                try:
-                    reasoning_trace = list(reasoning_trace) + list(meta_reasoning)
-                except Exception:
-                    pass
+                meta_response, meta_reasoning = self.model.inference(meta_prompt)
+                reasoning_trace += meta_reasoning
                 choice = self._extract_multiple_choice_answer(meta_response)
                 prediction["choice"] = choice if choice else ""
             else:
-                # No meta_question: map open response to A-E
-                mapped_choice, meta_reasoning = self._map_open_answer_to_choice(
-                    question=question,
-                    options_block=options_block,
-                    agent_answer=response.strip()
-                )
-                prediction["choice"] = mapped_choice if mapped_choice else ""
+                choice = self._extract_multiple_choice_answer(response)
+                prediction["choice"] = choice if choice else ""
 
-                try:
-                    reasoning_trace = list(reasoning_trace) + list(meta_reasoning)
-                except Exception:
-                    pass
-    
-            return prediction, reasoning_trace
-    
-        # Safety fallback
-        return prediction, "Unsupported question_type"
+        elif question_type == "open_ended":
+            prediction["choice"] = "NOTAVALUE"
+            prediction["open_ended_answer"] = response.strip()
 
-
-
-
-
-        
-        
-        
-    def _majority_vote(self, answers: List[str]) -> str:
-        answers = [a for a in answers if a]
-        if not answers:
-            return ""
-        c = Counter(answers)
-        # deterministic tie-break: alphabetical
-        best_count = max(c.values())
-        winners = sorted([k for k, v in c.items() if v == best_count])
-        return winners[0]
-        
-    def _sample_responses(self, prompt: str, m: int) -> Tuple[List[str], List[Any]]:
-        responses = []
-        traces = []
-        for _ in range(m):
-            r, t = self.model.inference(
-                prompt,
-                temperature=self.sc_temperature,
-                top_p=self.sc_top_p,
-                top_k=self.sc_top_k if self.sc_top_k is not None else None,
-            )
-            responses.append((r or "").strip())
-            traces.append(t)
-        return responses, traces
-
-
-
-
-
-
-
-
-
-    def _map_open_answer_to_choice(
-        self,
-        question: str,
-        options_block: str,
-        agent_answer: str,
-    ) -> Tuple[str, Any]:
-        """
-        Maps an open-ended agent answer to one MC option letter A-E via a deterministic (temperature=0) LLM call.
-        Returns (choice_letter, mapper_trace).
-        """
-
-        mapper_prompt = (
-            "You are a strict multiple-choice answer mapper.\n\n"
-            "TASK:\n"
-            "Given QUESTION, OPTIONS, and an AGENT ANSWER (free text), choose the single best matching option.\n\n"
-            "RULES:\n"
-            #"- Think internally, but do not write your reasoning.\n"
-            "- Output EXACTLY one line in this format:\n"
-            "  ANSWER: <A|B|C|D|E>\n"
-            "- Do not output any other text.\n\n"
-            "QUESTION:\n"
-            f"{question}\n\n"
-            "OPTIONS:\n"
-            f"{options_block}\n\n"
-            "AGENT ANSWER:\n"
-            f"{agent_answer}\n\n"
-            "ANSWER:"
-        )
-
-        mapper_resp, mapper_trace = self.model.inference(mapper_prompt, temperature=0.0)
-        mapped_choice = self._extract_multiple_choice_answer(mapper_resp)
-        return mapped_choice, mapper_trace
-
-
-
+        return prediction, reasoning_trace
 
 
 
@@ -1049,9 +763,6 @@ class CompetitionKit:
 
         return ""
 
-
-
-    
     # ---------------------------------------------------------------------
     # Everything below here is unchanged from your provided script
     # ---------------------------------------------------------------------
@@ -1072,8 +783,7 @@ class CompetitionKit:
             examples = dataset_examples if dataset_examples else []
 
             for i, (prediction, example) in enumerate(zip(result.predictions, examples)):
-                rt = result.reasoning_traces[i]
-                reasoning_trace = rt if isinstance(rt, str) else json.dumps(rt)
+                reasoning_trace = json.dumps(result.reasoning_traces[i])
 
                 prediction_text = prediction.get("open_ended_answer", "") or ""
                 if not prediction_text or prediction_text.strip() == "":
@@ -1277,44 +987,33 @@ class CompetitionKit:
 
         return metadata
 
-    @staticmethod
-    def create_metadata_parser() -> argparse.ArgumentParser:
-        """
-        Create command line argument parser for metadata
-        
-        Returns:
-            ArgumentParser with metadata-related arguments
-        """
-        parser = argparse.ArgumentParser(description='Evaluation Framework with Metadata Support')
-        
-        # Model information
-        parser.add_argument('--model-name', type=str, help='Name of the model')
-        parser.add_argument('--model-type', type=str, help='Type of model wrapper')
-        parser.add_argument('--base-model-name', type=str, help='Name of the base model')
-        parser.add_argument('--base-model-type', type=str, choices=['API', 'OpenWeighted'], 
-                           help='Type of base model (API or OpenWeighted)')
-        
-        # Track information
-        parser.add_argument('--track', type=str, choices=['internal_reasoning', 'agentic_reasoning'],
-                           default='internal_reasoning', help='Competition track')
-        
-        # Dataset and submission info
-        parser.add_argument('--dataset', type=str, help='Dataset name')
-        parser.add_argument('--additional-info', type=str, help='Additional information about the submission')
-        
-        # Configuration file
-        parser.add_argument('--config', type=str, help='Path to configuration file (JSON or YAML)')
-        
-        # Output settings
-        parser.add_argument('--output-dir', type=str, default='competition_results', 
-                           help='Output directory for results')
-        parser.add_argument('--output-file', type=str, default='submission.csv', 
-                           help='Output CSV filename for submission (will be packaged in zip)')
-        
-        # Evaluation settings
-        parser.add_argument('--subset-size', type=int, help='Limit evaluation to N examples')
-        
-        return parser
+
+def create_metadata_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description='Evaluation Framework with Metadata Support')
+
+    parser.add_argument('--model-name', type=str, help='Name of the model')
+    parser.add_argument('--model-type', type=str, help='Type of model wrapper')
+    parser.add_argument('--base-model-name', type=str, help='Name of the base model')
+    parser.add_argument('--base-model-type', type=str, choices=['API', 'OpenWeighted'],
+                        help='Type of base model (API or OpenWeighted)')
+
+    parser.add_argument('--track', type=str, choices=['internal_reasoning', 'agentic_reasoning'],
+                        default='internal_reasoning', help='Competition track')
+
+    parser.add_argument('--dataset', type=str, help='Dataset name')
+    parser.add_argument('--additional-info', type=str, help='Additional information about the submission')
+
+    parser.add_argument('--config', type=str, help='Path to configuration file (JSON or YAML)')
+
+    parser.add_argument('--output-dir', type=str, default='competition_results',
+                        help='Output directory for results')
+    parser.add_argument('--output-file', type=str, default='submission.csv',
+                        help='Output CSV filename for submission (will be packaged in zip)')
+
+    parser.add_argument('--subset-size', type=int, help='Limit evaluation to N examples')
+
+    return parser
+
 
 def load_config_file(config_path):
     if not os.path.exists(config_path):
@@ -1353,7 +1052,3 @@ def load_and_merge_config(args):
 
     add_config_to_args(config)
     return args
-
-
-
-create_metadata_parser = CompetitionKit.create_metadata_parser
