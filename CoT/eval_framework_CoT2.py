@@ -29,11 +29,21 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from tqdm import tqdm
 from abc import ABC, abstractmethod
-import csv
+import time, random
+import re  # needed for fallback and existing extractor patterns
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def polite_sleep(base_delay=5.0, jitter=2.0, peak_multiplier=1.0):
+    """
+    Sleep base_delay seconds + random jitter in [0,jitter].
+    peak_multiplier lets you slow down further if site looks stressed.
+    """
+    wait = max(0.01, base_delay * peak_multiplier) + random.uniform(0, jitter)
+    return wait
 
 
 @dataclass
@@ -92,6 +102,9 @@ class ChatGPTModel(BaseModel):
         top_p: float = 1.0,
         top_k: Optional[int] = None,  # not supported here; kept for compatibility
     ) -> Tuple[str, List[Dict]]:
+        
+        time.sleep(polite_sleep(base_delay=5.0, jitter=2.0))
+
         messages = [{"role": "user", "content": prompt}]
 
         resp = self.model_client.chat.completions.create(
