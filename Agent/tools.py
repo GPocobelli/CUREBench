@@ -53,11 +53,36 @@ wiki_tool = WikipediaQueryRun(api_wrapper=api_wrapper)
 
 _DEFAULT_TIMEOUT = 15
 
-def _http_get(url: str, params: Optional[dict] = None, headers: Optional[dict] = None) -> requests.Response:
+def _http_get(url: str, params=None, headers=None, max_retries: int = 6) -> requests.Response:
     h = {"User-Agent": "curebench-agent/1.0"}
     if headers:
         h.update(headers)
-    resp = requests.get(url, params=params, headers=h, timeout=_DEFAULT_TIMEOUT)
+
+    base = 1.0
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, params=params, headers=h, timeout=_DEFAULT_TIMEOUT)
+
+            # Handle rate limits / transient errors
+            if resp.status_code in (429, 503, 502, 504):
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after is not None:
+                    wait = float(retry_after)
+                else:
+                    wait = base * (2 ** attempt) + random.uniform(0, 0.5)
+
+                time.sleep(min(wait, 30.0))
+                continue
+
+            resp.raise_for_status()
+            return resp
+
+        except requests.RequestException:
+            # network hiccup: backoff
+            wait = base * (2 ** attempt) + random.uniform(0, 0.5)
+            time.sleep(min(wait, 30.0))
+
+    # last try: raise
     resp.raise_for_status()
     return resp
 
