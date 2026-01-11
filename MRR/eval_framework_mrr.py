@@ -115,8 +115,8 @@ class ChatGPTModel(BaseModel):
         self,
         prompt: str,
         max_tokens: int = 1024,
-        temperature: float = 0.6,
-        top_p: float = 0.8,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
         top_k: Optional[int] = None,  # not supported here; kept for compatibility
     ) -> Tuple[str, List[Dict]]:
         
@@ -741,7 +741,12 @@ class CompetitionKit:
 
 
 
-    def _mrrv_vote(self, ranked_lists: List[List[str]], candidates: List[str]) -> Tuple[str, Dict[str, float]]:
+    def _mrrv_vote(
+        self,
+        ranked_lists: List[List[str]],
+        candidates: List[str],
+        tie_break_preference: Optional[str] = None,
+    ) -> Tuple[str, Dict[str, float]]:        
         """
         Mean Reciprocal Rank Voting gemäß:
         MRR(A) = (1/k) * sum_{i=1..k} 1 / rank_A(A_i^r)
@@ -780,7 +785,15 @@ class CompetitionKit:
             scores[c] /= float(k)
 
         # Tie-break: höchste Score, dann alphabetisch
-        winner = sorted(candidates, key=lambda c: (-scores[c], c))[0]
+        pref = (tie_break_preference or "").upper().strip()
+        winner = sorted(
+            candidates,
+            key=lambda c: (
+                -scores[c],
+                0 if c == pref else 1,  # bevorzugt pref bei Gleichstand
+                c,
+            ),
+        )[0]
         return winner, scores
 
 
@@ -794,8 +807,10 @@ class CompetitionKit:
         self,
         ranked_lists: List[List[str]],
         candidates: List[str],
-        strategy: str = "mrrv",   # "mrrv" oder "majority_top1"
+        strategy: str = "mrrv",
+        tie_break_preference: Optional[str] = None,
     ) -> Tuple[str, Dict[str, float]]:
+
         if not ranked_lists or not candidates:
             return "NOTAVALUE", {}
 
@@ -810,7 +825,7 @@ class CompetitionKit:
             return winner, counts
 
         # default: mrrv
-        return self._mrrv_vote(ranked_lists, candidates)
+        return self._mrrv_vote(ranked_lists, candidates, tie_break_preference=tie_break_preference)
 
 
     def _log_vote_summary(
@@ -969,6 +984,7 @@ class CompetitionKit:
                     ranked_lists=ranked_lists,
                     candidates=candidates,
                     strategy="mrrv",
+                    tie_break_preference=candidates[0],
                 )
 
                 self._log_vote_summary(
@@ -1083,6 +1099,7 @@ class CompetitionKit:
                         ranked_lists=ranked_lists,
                         candidates=meta_candidates,
                         strategy="mrrv",
+                        tie_break_preference=candidates[0],
                     )
 
                     self._log_vote_summary(
@@ -1120,10 +1137,10 @@ class CompetitionKit:
                         )
                     
                         for _ in range(k_votes):
-                            meta_resp, meta_rank_trace = self.model.inference(
+                            meta_resp, meta_trace = self.model.inference(
                                 meta_prompt,
-                                temperature=meta_rank_temperature,
-                                top_p=meta_rank_top_p,
+                                temperature=vote_temperature,
+                                top_p=vote_top_p,
                             )
                             reasoning_trace.extend(meta_trace)
                             v = self._extract_multiple_choice_answer(meta_resp)
