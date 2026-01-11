@@ -1088,7 +1088,6 @@ class CompetitionKit:
                         ranked_lists=ranked_lists,
                         candidates=meta_candidates,
                         strategy="mrrv",
-                        tie_break_preference=candidates[0],
                     )
 
                     self._log_vote_summary(
@@ -1508,3 +1507,4 @@ def load_and_merge_config(args):
 
     add_config_to_args(config)
     return args
+
