@@ -108,8 +108,8 @@ class ChatGPTModel(BaseModel):
         self,
         prompt: str,
         max_tokens: int = 1024,
-        temperature: float = 0.6,
-        top_p: float = 0.8,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
         top_k: Optional[int] = None,  # not supported here; kept for compatibility
     ) -> Tuple[str, List[Dict]]:
         
@@ -283,7 +283,7 @@ class LocalModel(BaseModel):
 
         outputs = self.model.generate(
             input_ids=input_ids,
-            attention_mask=attention_mask,   # ✅ FIX
+            attention_mask=attention_mask,  
             temperature=temperature,
             top_p=top_p,
             max_new_tokens=max_tokens,
@@ -752,7 +752,12 @@ class CompetitionKit:
 
 
 
-    def _mrrv_vote(self, ranked_lists: List[List[str]], candidates: List[str]) -> Tuple[str, Dict[str, float]]:
+    def _mrrv_vote(
+        self,
+        ranked_lists: List[List[str]],
+        candidates: List[str],
+        tie_break_preference: Optional[str] = None,
+    ) -> Tuple[str, Dict[str, float]]:
         """
         Mean Reciprocal Rank Voting gemäß:
         MRR(A) = (1/k) * sum_{i=1..k} 1 / rank_A(A_i^r)
@@ -790,8 +795,17 @@ class CompetitionKit:
         for c in candidates:
             scores[c] /= float(k)
 
-        # Tie-break: höchste Score, dann alphabetisch
-        winner = sorted(candidates, key=lambda c: (-scores[c], c))[0]
+        # Tie-break: höchste Score, dann (optional) baseline preference, dann alphabetisch
+        pref = (tie_break_preference or "").upper().strip()
+        winner = sorted(
+            candidates,
+            key=lambda c: (
+                -scores[c],
+                0 if c == pref else 1,  # bevorzugt pref bei Gleichstand
+                c,
+            ),
+        )[0]        
+        
         return winner, scores
 
 
@@ -805,7 +819,8 @@ class CompetitionKit:
         self,
         ranked_lists: List[List[str]],
         candidates: List[str],
-        strategy: str = "mrrv",   # "mrrv" oder "majority_top1"
+        strategy: str = "mrrv",  # "mrrv" oder "majority_top1"
+        tie_break_preference: Optional[str] = None,   
     ) -> Tuple[str, Dict[str, float]]:
         if not ranked_lists or not candidates:
             return "NOTAVALUE", {}
@@ -821,7 +836,8 @@ class CompetitionKit:
             return winner, counts
 
         # default: mrrv
-        return self._mrrv_vote(ranked_lists, candidates)
+        return self._mrrv_vote(ranked_lists, candidates, tie_break_preference=tie_break_preference)
+
 
 
     def _log_vote_summary(
@@ -960,7 +976,12 @@ class CompetitionKit:
                 cand_str = " > ".join(candidates)
                 ranked_lists: List[List[str]] = []
                 all_traces: List[Dict] = []
-                rank_prompt = f"The following is a multiple choice question about medicine. Rank the answer options and answer with the letter-format [highest rank] > [next best rank] > … > [lowest rank].\n\nQuestion: {question}\n\nAnswer:"
+                rank_prompt = (
+                    "The following is a multiple choice question about medicine."
+                    "Rank the answer options and answer with the letter-format [highest rank] > [next best rank] > … > [lowest rank].\n\n"
+                    f"Question: {question}\n\n"
+                    "Answer:"
+                )
 
                 for _ in range(k_votes):
                     rank_resp, rank_trace = self.model.inference(
@@ -975,6 +996,7 @@ class CompetitionKit:
                     ranked_lists=ranked_lists,
                     candidates=candidates,
                     strategy="mrrv",
+                    tie_break_preference=candidates[0], 
                 )
 
                 self._log_vote_summary(
@@ -1066,6 +1088,7 @@ class CompetitionKit:
                         ranked_lists=ranked_lists,
                         candidates=meta_candidates,
                         strategy="mrrv",
+                        tie_break_preference=candidates[0],
                     )
 
                     self._log_vote_summary(
@@ -1088,7 +1111,7 @@ class CompetitionKit:
 
                     if meta_mode == "majority_letter" and k_votes > 1:
                         votes: List[str] = []
-                
+                 
                         meta_prompt = (
                             f"{example['meta_question']}\n"
                             "You are a helpful assistant who reviews an open-end answer.\n\n"
@@ -1103,10 +1126,10 @@ class CompetitionKit:
                         )
                     
                         for _ in range(k_votes):
-                            meta_rank_resp, meta_rank_trace = self.model.inference(
-                                meta_rank_prompt,
-                                temperature=meta_rank_temperature,
-                                top_p=meta_rank_top_p,
+                            meta_resp, meta_trace = self.model.inference(
+                                meta_prompt,
+                                temperature=vote_temperature,
+                                top_p=vote_top_p,
                             )
                             reasoning_trace.extend(meta_trace)
                             v = self._extract_multiple_choice_answer(meta_resp)
