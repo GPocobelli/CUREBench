@@ -1099,7 +1099,6 @@ class CompetitionKit:
                         ranked_lists=ranked_lists,
                         candidates=meta_candidates,
                         strategy="mrrv",
-                        tie_break_preference=candidates[0],
                     )
 
                     self._log_vote_summary(
