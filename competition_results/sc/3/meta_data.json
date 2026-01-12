@@ -1,0 +1,9 @@
+{
+  "model_name": "gpt-4o-mini",
+  "model_type": "chatgpt",
+  "track": "internal_reasoning",
+  "base_model_type": "API",
+  "base_model_name": "gpt-4o-mini",
+  "dataset": "cure_bench_pharse_1",
+  "additional_info": "Submission using SC tool"
+}
