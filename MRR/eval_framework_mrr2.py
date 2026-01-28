@@ -163,12 +163,6 @@ class ChatGPTModel(BaseModel):
 #             logger.error(f"Failed to import local model dependencies: {e}")
 #             raise
 
-
-
-
-    # -----------------------------------------------------------------------------------------
-    # Llama
-
 class LocalModel(BaseModel):
     """Local HuggingFace model wrapper"""
 
@@ -248,9 +242,6 @@ class LocalModel(BaseModel):
             logger.error(f"Failed to import local model dependencies: {e}")
             raise
 
-
-
-    
     def inference(self, prompt: str, max_tokens: int = 1024, **kwargs) -> Tuple[str, List[Dict]]:
         """Local model inference"""
         
@@ -299,14 +290,6 @@ class LocalModel(BaseModel):
         complete_messages = messages + [{"role": "assistant", "content": response_text}]
         return response_text, complete_messages
 
-
-
-
-
-
-
-
-
 class CustomModel(BaseModel):
     """Custom model wrapper for user-defined models"""
 
@@ -333,12 +316,6 @@ class CustomModel(BaseModel):
                 {"role": "assistant", "content": "Error occurred"}
             ]
             return "Error occurred", error_messages
-
-
-
-
-
-
 
 class GPTOSS20BModel(BaseModel):
     """GPT-OSS-20B wrapper"""
@@ -519,26 +496,6 @@ class CompetitionKit:
         self.model.load(**kwargs)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def _load_dataset_configs(self, config) -> Dict:
         if not config:
             print("Not config provided, existing.")
@@ -666,35 +623,16 @@ class CompetitionKit:
         return dataset_list
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def _extract_option_letters(self, question_text: str) -> List[str]:
         """
-        Extrahiert vorhandene Antwortoptionen aus dem Frage-Text.
-        Unterstützt Formate wie:
-        A: ..., B: ... / A) ... / A. ...
-        Rückgabe: z.B. ["A","B","C","D"].
+        extract answer options from text. Supporting multiple formats
         """
         if not question_text:
             return ["A", "B", "C", "D", "E"]
 
         text = question_text.strip()
 
-        # Option-Markierungen am Zeilenanfang: "A:", "B)", "C." etc.
+        # detect option markings at the beginning (such as :, ., ) )
         letters = re.findall(r"(?m)^\s*([A-E])\s*[:\)\.]\s+", text.upper())
         # Deduplizieren in Reihenfolge
         out = []
@@ -704,7 +642,7 @@ class CompetitionKit:
                 seen.add(x)
                 out.append(x)
 
-        # Fallback: wenn nichts gefunden, Default
+        # Fallback: Default
         return out if out else ["A", "B", "C", "D", "E"]
 
 
@@ -713,13 +651,12 @@ class CompetitionKit:
 
     def _extract_ranking(self, response: str, candidates: List[str]) -> List[str]:
         """
-        Parse eines Rankings für die gegebenen candidates.
-        Akzeptiert z.B.:
+        Parse ranking for given candidates. Accepting e.g.:
         A > C > B
         A,C,B
         A C B
-        > B > A > C  (wird repariert, solange Buchstaben vorhanden)
-        Wenn unbrauchbar: gibt candidates in Originalreihenfolge zurück.
+        > B > A > C
+        fallback: return original order.
         """
         if not response:
             return candidates[:]  # fallback
@@ -728,7 +665,7 @@ class CompetitionKit:
 
         text = re.sub(r"\b(NONE|NOTAVALUE|NULL|NAN)\b", " ", text)
 
-        # Nur Kandidatenbuchstaben extrahieren (als einzelne Tokens)
+        # extract only candidate letters
         pattern = r"(?<![A-Z])(" + "|".join(map(re.escape, candidates)) + r")(?![A-Z])"
         found = re.findall(pattern, text)
 
@@ -739,11 +676,11 @@ class CompetitionKit:
                 seen.add(x)
                 ranking.append(x)
 
-        # Wenn GAR nichts gefunden: fallback
+        # fallback: original order
         if len(ranking) == 0:
             return candidates[:]
 
-        # Fehlende Kandidaten hinten anfügen
+        # append missing candidates
         for c in candidates:
             if c not in seen:
                 ranking.append(c)
@@ -762,8 +699,6 @@ class CompetitionKit:
         Mean Reciprocal Rank Voting gemäß:
         MRR(A) = (1/k) * sum_{i=1..k} 1 / rank_A(A_i^r)
         winner = argmax_A MRR(A)
-
-        ranked_lists: Liste von k Rankings, jedes ist z.B. ["A","C","B","D","E"].
         """
         k = len(ranked_lists)
         if k == 0:
@@ -780,13 +715,13 @@ class CompetitionKit:
                     seen.add(x)
                     local.append(x)
 
-            # Fehlende Kandidaten hinten anhängen
+            # append missing candidate letters
             for c in candidates:
                 if c not in seen:
                     local.append(c)
                     seen.add(c)
 
-            # Positionsmap in einem Pass (O(n))
+            # position map
             pos = {c: idx + 1 for idx, c in enumerate(local[:len(candidates)])}
 
             for c in candidates:
@@ -795,31 +730,24 @@ class CompetitionKit:
         for c in candidates:
             scores[c] /= float(k)
 
-        # Tie-break: höchste Score, dann (optional) baseline preference, dann alphabetisch
+        # tie-break: highest score, then alphabetically
         pref = (tie_break_preference or "").upper().strip()
         winner = sorted(
             candidates,
             key=lambda c: (
                 -scores[c],
-                0 if c == pref else 1,  # bevorzugt pref bei Gleichstand
+                0 if c == pref else 1,
                 c,
             ),
         )[0]        
         
         return winner, scores
 
-
-
-
-
-
-
-
     def _aggregate_rankings_and_pick(
         self,
         ranked_lists: List[List[str]],
         candidates: List[str],
-        strategy: str = "mrrv",  # "mrrv" oder "majority_top1"
+        strategy: str = "mrrv",  # "mrrv" or "majority_top1"
         tie_break_preference: Optional[str] = None,   
     ) -> Tuple[str, Dict[str, float]]:
         if not ranked_lists or not candidates:
@@ -837,7 +765,6 @@ class CompetitionKit:
 
         # default: mrrv
         return self._mrrv_vote(ranked_lists, candidates, tie_break_preference=tie_break_preference)
-
 
 
     def _log_vote_summary(
@@ -863,11 +790,6 @@ class CompetitionKit:
             f"{prefix} TOP1-VOTE SUMMARY | winner={winner} | counts={counts} | votes={votes}"
         )
 
-
-
-
-
-
     def _majority_vote(self, votes: List[str], candidates: List[str]) -> Tuple[str, Dict[str, float]]:
         counts = {c: 0.0 for c in candidates}
         for v in votes:
@@ -875,9 +797,6 @@ class CompetitionKit:
                 counts[v] += 1.0
         winner = sorted(candidates, key=lambda c: (-counts[c], c))[0]
         return winner, counts
-
-
-
 
     def _final_choice_override(self, example: Dict, choice: str, prediction_text: str) -> Tuple[str, str]:
         qtype = example.get("question_type", "")
@@ -914,30 +833,6 @@ class CompetitionKit:
     def _log_final_override(self, prefix: str, old: str, new: str, reason: str):
         logger.info(f"{prefix} FINAL-OVERRIDE | old={old} -> new={new} | reason={reason}")
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    # =====================================================================
-    # FIXED: CoT-safe prompts + syntactically safe meta_prompt
-    # - Replaces _get_prediction_with_trace with CoT-safe prompts
-    # - Uses a syntactically safe meta_prompt (no triple-quote nesting)
-    # - Keeps _extract_multiple_choice_answer intact
-    # =====================================================================
     def _get_prediction_with_trace(self, example: Dict) -> Tuple[Dict, List[Dict]]:
         """Get model prediction and reasoning trace for a single example"""
         question = example["question"]
@@ -945,7 +840,7 @@ class CompetitionKit:
 
         prediction = {"choice": "", "open_ended_answer": ""}
 
-        # Voting config IMMER am Anfang (sonst: UnboundLocalError in open_ended_multi_choice)
+        # Voting configat beginning (otherwise error)
         voting_cfg = (self.config.get("voting") or {})
         method = (voting_cfg.get("method") or "").lower()          # e.g. "mrrv"
         k_votes = int(voting_cfg.get("k", 1))
@@ -960,9 +855,6 @@ class CompetitionKit:
         debug_cfg = self.config.get("debug", {}) or {}
         print_prompts = bool(debug_cfg.get("print_prompts", False))
         add_rationale = bool(debug_cfg.get("add_rationale", False))
-
-
-
 
         # ---------------------------------------------------------
         # MULTI_CHOICE
@@ -1188,10 +1080,6 @@ class CompetitionKit:
 
         raise ValueError(f"Unsupported question type: {question_type}")
 
-
-
-
-
     def _extract_multiple_choice_answer(self, response: str) -> str:
         """Extract letter answer from model response"""
         if not response or response is None:
@@ -1218,9 +1106,6 @@ class CompetitionKit:
 
         return ""
 
-    # ---------------------------------------------------------------------
-    # Everything below here is unchanged from your provided script
-    # ---------------------------------------------------------------------
     def save_submission(self, results: List[EvaluationResult], filename: str = "submission.csv",
                         metadata: Dict = None, dataset_examples: List[Dict] = None,
                         config_path: str = None, args: argparse.Namespace = None):
@@ -1507,4 +1392,3 @@ def load_and_merge_config(args):
 
     add_config_to_args(config)
     return args
-

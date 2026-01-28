@@ -32,6 +32,6 @@
     "system_prompt": "You are a helpful assistant."
   },
   
-  "output_dir": "competition_results",
+  "output_dir": "competition_results/sc",
   "output_file": "submission.csv"
 }

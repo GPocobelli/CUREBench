@@ -142,12 +142,6 @@ class ChatGPTModel(BaseModel):
 #             logger.error(f"Failed to import local model dependencies: {e}")
 #             raise
 
-
-
-
-    # -----------------------------------------------------------------------------------------
-    # Llama
-
 class LocalModel(BaseModel):
     """Local HuggingFace model wrapper"""
 
@@ -226,12 +220,6 @@ class LocalModel(BaseModel):
         except ImportError as e:
             logger.error(f"Failed to import local model dependencies: {e}")
             raise
-
-
-
-
-
-
 
 
     
@@ -610,9 +598,6 @@ class CompetitionKit:
 
         return dataset_list
 
-
-
-
     def _format_options_block(self, options: Dict[str, str]) -> str:
         """Format options deterministically as in classic MCQ prompts."""
         if not options:
@@ -621,14 +606,6 @@ class CompetitionKit:
         return "\n".join([f"{k}. {options[k]}" for k in letters])
     
 
-
-
-    # =====================================================================
-    # FIXED: CoT-safe prompts + syntactically safe meta_prompt
-    # - Replaces _get_prediction_with_trace with CoT-safe prompts
-    # - Uses a syntactically safe meta_prompt (no triple-quote nesting)
-    # - Keeps _extract_multiple_choice_answer intact
-    # =====================================================================
     def _get_prediction_with_trace(self, example: Dict) -> Tuple[Dict, str]:
         """Get model prediction and reasoning trace for a single example"""
         question = example["question"]
@@ -732,13 +709,6 @@ class CompetitionKit:
 
         return prediction, reasoning_trace
 
-
-
-
-
-
-
-
     def _extract_multiple_choice_answer(self, response: str) -> str:
         if not response:
             return ""
@@ -763,9 +733,6 @@ class CompetitionKit:
 
         return ""
 
-    # ---------------------------------------------------------------------
-    # Everything below here is unchanged from your provided script
-    # ---------------------------------------------------------------------
     def save_submission(self, results: List[EvaluationResult], filename: str = "submission.csv",
                         metadata: Dict = None, dataset_examples: List[Dict] = None,
                         config_path: str = None, args: argparse.Namespace = None):

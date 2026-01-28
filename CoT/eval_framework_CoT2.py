@@ -1,6 +1,5 @@
 """
 Bio-Medical AI Competition Starter Kit
-
 A simple framework for evaluating models on bio-medical datasets.
 Perfect for getting started quickly in the competition.
 
@@ -45,7 +44,6 @@ def polite_sleep(base_delay=5.0, jitter=2.0, peak_multiplier=1.0):
     wait = max(0.01, base_delay * peak_multiplier) + random.uniform(0, jitter)
     return wait
 
-
 @dataclass
 class EvaluationResult:
     """Simple container for evaluation results"""
@@ -57,7 +55,6 @@ class EvaluationResult:
     predictions: List[Dict]  # Changed from List[str] to List[Dict]
     reasoning_traces: List[str] = None  # Add reasoning traces
     details: Optional[Dict] = None
-
 
 # Model Classes
 class BaseModel(ABC):
@@ -81,7 +78,6 @@ class BaseModel(ABC):
             Tuple of (response, messages) where messages is the complete conversation history
         """
         pass
-
 
 class ChatGPTModel(BaseModel):
     """ChatGPT/OpenAI model wrapper (OpenAI Platform key)"""
@@ -118,7 +114,6 @@ class ChatGPTModel(BaseModel):
         response = resp.choices[0].message.content or ""
         complete_messages = messages + [{"role": "assistant", "content": response}]
         return response, complete_messages
-
 
 class LocalModel(BaseModel):
     """Local HuggingFace model wrapper"""
@@ -574,7 +569,6 @@ class CompetitionKit:
         
         return dataset_list
 
-    
     def _get_prediction_with_trace(self, example: Dict) -> Tuple[Dict, str]:
         """Get model prediction and reasoning trace for a single example"""
         question = example["question"]
@@ -654,19 +648,6 @@ class CompetitionKit:
         
         # Default to empty string if nothing found (to avoid None values in CSV)
         return ""
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
     
     def save_submission(self, results: List[EvaluationResult], filename: str = "submission.csv", 
                        metadata: Dict = None, dataset_examples: List[Dict] = None,
@@ -824,7 +805,6 @@ class CompetitionKit:
         if null_mask.sum() > 0:
             logger.warning(f"Found {null_mask.sum()} pandas null values in choice column, replacing with NOTAVALUE")
             df.loc[null_mask, 'choice'] = 'NOTAVALUE'
-        
 
         # Use proper CSV parameters for robust handling of complex data
         df.to_csv(csv_path, index=False, na_rep='NOTAVALUE', quoting=1)  # index=False to avoid pandas index issues
@@ -984,7 +964,7 @@ class CompetitionKit:
             "dataset": "unknown",
             "additional_info": "Generated using eval_framework"
         }
-        
+
         # Override with fallback metadata if provided
         if fallback_metadata:
             metadata.update(fallback_metadata)
@@ -1059,14 +1039,12 @@ def load_config_file(config_path):
         print(f"❌ Error loading config file {config_path}: {e}")
         sys.exit(1)
 
-
 def load_and_merge_config(args):
     """Load config file and merge values into args. Command line args take precedence."""
     if not args.config:
         return args
     
     config = load_config_file(args.config)
-    
     # First, handle the metadata section specially - merge its contents directly
     if 'metadata' in config:
         metadata = config['metadata']

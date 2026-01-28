@@ -13,6 +13,6 @@
     "dataset_path": "data/curebench_valset_pharse1.jsonl",
     "description": "CureBench 2025 test questions"
   },
-  "output_dir": "competition_test_results",
+  "output_dir": "competition_test_results/agent",
   "model_class": "agent"
 }

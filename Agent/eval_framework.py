@@ -294,10 +294,6 @@ class LangChainAgentModel(BaseModel):
                 "If the prompt requests a multiple-choice letter, output ONLY that letter."
             ),
         )
-        
-        
-        
-        
 
     def inference(self, prompt: str, max_tokens: int = 1024) -> Tuple[str, List[Dict]]:
         
@@ -306,12 +302,12 @@ class LangChainAgentModel(BaseModel):
         if self._agent is None:
             raise RuntimeError("Agent not initialized. Did you call load()?")
 
-        # LangChain v1: Agent wird mit messages aufgerufen
+        # LangChain v1: call agent with messages
         result = self._agent.invoke(
             {"messages": [{"role": "user", "content": prompt}]}
         )
 
-        # result enthält typischerweise eine messages-Liste (Human/AI/Tool Messages)
+        # result contains messages-list
         messages = result.get("messages", [])
         
         print("\n==== RAW MESSAGE TYPES ====")
@@ -325,13 +321,13 @@ class LangChainAgentModel(BaseModel):
         
         output_text = ""
         if messages:
-            # letzte AI-Nachricht extrahieren
+            # extract last message
             last = messages[-1]
-            # AIMessage hat .content, dict hat ["content"]
+            # AIMessage has .content, dict has ["content"]
             output_text = getattr(last, "content", None) or (last.get("content") if isinstance(last, dict) else "")
         output_text = str(output_text or "").strip()
 
-        # Trace bauen (best-effort, ohne Annahmen über interne Klassen)
+        # build trace
         trace = [{"role": "user", "content": prompt}]
 
         last_tool_name = None
@@ -365,20 +361,6 @@ class LangChainAgentModel(BaseModel):
 
         trace.append({"role": "assistant", "content": output_text})
         return output_text, trace
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 class GPTOSS20BModel(BaseModel):
     """GPT-OSS-20B wrapper"""
@@ -511,23 +493,6 @@ class GPTOSS20BModel(BaseModel):
 
         return final_response.strip(), reasoning_trace
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def extract_sources_from_trace(trace: List[Dict[str, Any]]) -> List[str]:
     """
     Extract source information from the LangChain agent trace produced by
@@ -580,11 +545,6 @@ def extract_sources_from_trace(trace: List[Dict[str, Any]]) -> List[str]:
                 sources.add(f"{tool_name}: {nct.upper()}")
 
     return sorted(sources)
-
-
-
-
-
 
 class CompetitionKit:
     """
@@ -827,21 +787,6 @@ class CompetitionKit:
         
         return dataset_list
 
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
     def _get_prediction_with_trace(self, example: Dict) -> Tuple[Dict, str]:
         """Get model prediction and reasoning trace for a single example"""
         question = example["question"]
@@ -919,19 +864,7 @@ class CompetitionKit:
         
         
         return prediction, reasoning_trace
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
+
     def _extract_multiple_choice_answer(self, response: str) -> str:
         """Extract letter answer from model response"""
         if not response or response is None:
